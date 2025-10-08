@@ -33,11 +33,12 @@ class apb_wr_rd_sequence extends apb_basic_sequence;
   endfunction : new
 
   
-  task send_transaction(logic is_write, logic [7:0] addr, logic [31:0] wdata = 0);
+  task send_transaction(logic is_write = 0, logic [7:0] addr = 0, logic [31:0] wdata = 0, is_b2b_before = 0, is_b2b_after = 0);
      // Using uvm macro to send the seq item with inline constraints using the same sequencer this sequence was started with.
     // Spec summarize for APB3 READ and WRITE. we got three phases:
     // 1. Setup phase:  PSEL is asserted. PADDR, PWRITE and PWDATA are valid.
-    `uvm_do_with(apb_seq_it, {
+    if(!is_b2b_before)
+      `uvm_do_with(apb_seq_it, {
       pwrite          == is_write;
       paddr           == addr;
       pwdata          == wdata;
@@ -58,11 +59,11 @@ class apb_wr_rd_sequence extends apb_basic_sequence;
     // 3. At the end of the transfer, PENABLE is deasserted and so is PSEL (for this basic testbench I don't allow back2back accesses)
     `uvm_do_with(apb_seq_it, {
       // pwdata          == is_write ? wdata : 32'hDEAD_BEEF;
-      psel            == 0;
+      psel            == is_b2b_after;
       penable         == 0; // End
       wait_for_pready == 0;
     });
-endtask
+  endtask
 
   
   task body();
@@ -74,8 +75,10 @@ endtask
       addr = ($urandom_range(0, (8'hFC / BYTE_PER_WORD))) * BYTE_PER_WORD;
       data = $urandom;
       
-      send_transaction(1, addr, data);
-      send_transaction(0, addr, 'hdeadbeef);
+      // TODO: this b2b logic is flawed, think of a more creative way to have b2b tx OR first think how to incorporate multiple slave APBs
+      send_transaction(1, addr, data, 0,0);
+      send_transaction(1, addr, data, 0,0);
+      send_transaction(0, addr, 'hdeadbeef, 0,0);
     end
   endtask
   
