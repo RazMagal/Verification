@@ -8,7 +8,7 @@ import uvm_pkg::*;
 `include "apb_monitor.svh"
 `include "apb_scoreboard.svh"
 `include "apb_agent.svh"
-`include "apb_env.svh"S
+`include "apb_env.svh"
 `include "apb_test.svh"
 endpackage
 
