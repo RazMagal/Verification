@@ -1,0 +1,40 @@
+// -----------------------------------------------------------------------------
+// apb_if : AMBA APB3 interface (shared VIP)
+//   Parameterized address/data widths so the same interface serves both the
+//   standalone apb_timer (ADDR_WIDTH=8) and the apb_subsystem (ADDR_WIDTH=12).
+//   Clocking blocks + modports give the UVM driver/monitor race-free access.
+// -----------------------------------------------------------------------------
+interface apb_if #(parameter int ADDR_WIDTH = 8, parameter int DATA_WIDTH = 32);
+  logic                  clk;
+  logic                  rst_n;
+  logic [ADDR_WIDTH-1:0] paddr;
+  logic                  pwrite;
+  logic                  penable;
+  logic                  psel;
+  logic [DATA_WIDTH-1:0] pwdata;
+  logic [DATA_WIDTH-1:0] prdata;
+  logic                  pready;
+  logic                  pslverr;
+
+  // APB3 slave modport (the DUT's view): master-driven in, slave-driven out.
+  modport slave (
+    input  clk, rst_n, paddr, pwrite, psel, penable, pwdata,
+    output prdata, pready, pslverr
+  );
+
+  // ---- Simulation-only clocking blocks / modports (kept out of synthesis) ----
+  // synopsys translate_off
+  clocking m_drv_cb @(posedge clk);
+    // default input #1step output #1;   // enable if skew tuning is needed
+    input  prdata, pready, pslverr;
+    output paddr, pwrite, psel, penable, pwdata;
+  endclocking
+
+  clocking m_mon_cb @(posedge clk);
+    input  prdata, pready, pslverr, paddr, pwrite, psel, penable, pwdata;
+  endclocking
+
+  modport m_drv_mp (clocking m_drv_cb, input rst_n);
+  modport m_mon_mp (clocking m_mon_cb, input rst_n);
+  // synopsys translate_on
+endinterface
