@@ -152,6 +152,14 @@ class apb_timer_reg_block extends uvm_reg_block;
     PRESCALE.configure(this);
     PRESCALE.build();
 
+    // Exclude the volatile / HW-updated registers from the automated bit-bash
+    // test: VALUE is a RO live counter and STATUS.IRQ is W1C set by hardware,
+    // so a walking-ones write/read-back does not model them (and can spuriously
+    // fail on some UVM library versions). Their real behavior is checked by the
+    // reference-model scoreboard instead.
+    VALUE.set_attribute ("NO_REG_BIT_BASH_TEST", "1");
+    STATUS.set_attribute("NO_REG_BIT_BASH_TEST", "1");
+
     // ---- address map : base 0x0, 4 bytes/word, byte-addressed, little-endian
     default_map = create_map("default_map", 'h0, 4, UVM_LITTLE_ENDIAN, 1);
     default_map.add_reg(CTRL,     'h00, "RW");

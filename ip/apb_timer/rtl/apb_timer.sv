@@ -64,6 +64,9 @@ module apb_timer #(
       (apb.paddr inside {CTRL_OFF, LOAD_OFF, VALUE_OFF, STATUS_OFF, PRESCALE_OFF});
 
   // Register write strobe: only for legal addresses (illegal -> pslverr, no effect).
+  // NOTE: v1.0 has no wait states (pready is always 1 in ACCESS), so this is the
+  // completing beat. If a PREADY wait hook is ever added, gate this with pready
+  // (&& apb.pready) so a write commits exactly once, on the completing beat.
   assign wr_en     = apb.psel && apb.penable && apb.pwrite && addr_legal;
   assign wr_status = wr_en && (apb.paddr == STATUS_OFF);
 

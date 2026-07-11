@@ -89,21 +89,16 @@ class apb_timer_scoreboard extends uvm_scoreboard;
                  act.addr, exp.slverr, act.slverr))
     end
     if (act.dir == APB_READ) begin
+      // The reference model is cycle-exact (its shadow at posedge k equals the
+      // registers the monitor samples during cycle k), so EVERY read -- VALUE
+      // included -- must match exactly. A tolerance here would only ever mask a
+      // genuine off-by-one counter bug, which is precisely what this env exists
+      // to catch.
       if (exp.rdata !== act.rdata) begin
-        // VALUE live-counter read may skew by one tick -> tolerate +/-1.
-        bit off_by_one = ((exp.rdata - act.rdata) == 32'h1) ||
-                         ((act.rdata - exp.rdata) == 32'h1);
-        if ((act.addr == VALUE_OFF) && off_by_one) begin
-          `uvm_info("SCB_APB_VALUE_TOL", $sformatf(
-                    "VALUE read within +/-1 (exp=0x%08h act=0x%08h) - tolerated",
-                    exp.rdata, act.rdata), UVM_MEDIUM)
-        end
-        else begin
-          err = 1'b1;
-          `uvm_error("SCB_APB_RDATA", $sformatf(
-                     "rdata mismatch @0x%02h exp=0x%08h act=0x%08h",
-                     act.addr, exp.rdata, act.rdata))
-        end
+        err = 1'b1;
+        `uvm_error("SCB_APB_RDATA", $sformatf(
+                   "rdata mismatch @0x%02h exp=0x%08h act=0x%08h",
+                   act.addr, exp.rdata, act.rdata))
       end
     end
     if (err) apb_fail++;
@@ -136,7 +131,9 @@ class apb_timer_scoreboard extends uvm_scoreboard;
     end
     else begin
       dcyc = (exp.cyc > act.cyc) ? (exp.cyc - act.cyc) : (act.cyc - exp.cyc);
-      if (dcyc > 1) begin
+      // Edges are cycle-aligned in the exact model (dcyc==0 on good hardware),
+      // so require an exact cycle match -- a 1-cycle-late/early irq is a bug.
+      if (dcyc > 0) begin
         err = 1'b1;
         `uvm_error("SCB_IRQ_TIME", $sformatf(
                    "irq edge cycle off by %0d (exp cyc=%0d act cyc=%0d)",
