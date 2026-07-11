@@ -22,6 +22,14 @@ interface apb_if #(parameter int ADDR_WIDTH = 8, parameter int DATA_WIDTH = 32);
     output prdata, pready, pslverr
   );
 
+  // APB3 master modport (an RTL initiator's view, e.g. the subsystem
+  // interconnect driving a downstream slave). clk/rst_n are wired by the
+  // enclosing top, so they are not part of this modport's direction set.
+  modport master (
+    output paddr, pwrite, psel, penable, pwdata,
+    input  prdata, pready, pslverr
+  );
+
   // ---- Simulation-only clocking blocks / modports (kept out of synthesis) ----
   // synopsys translate_off
   clocking m_drv_cb @(posedge clk);

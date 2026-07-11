@@ -1,39 +1,51 @@
+// -----------------------------------------------------------------------------
+// apb_monitor.svh : passive APB observer.
+//   Samples through the m_mon_cb clocking block. On a completed ACCESS beat
+//   (psel && penable && pready) it CREATES A FRESH item, populates
+//   addr/dir/wdata/rdata/slverr, and broadcasts it. A new object per beat is
+//   mandatory so downstream subscribers (scoreboard, coverage) each get their
+//   own transaction instead of a shared, overwritten handle.
+// -----------------------------------------------------------------------------
+`ifndef APB_MONITOR_SVH
+`define APB_MONITOR_SVH
+
 class apb_monitor extends uvm_monitor;
-  `uvm_component_utils(apb_monitor);
-  
-  virtual apb_if.m_mon_mp      vif;
-  apb_seq_item                 seq_it;
-  uvm_analysis_port #(apb_seq_item) mon_analysis_port;
-  
-  
-  function new(string name="", uvm_component parent=null);
-    super.new(name,parent);
+  `uvm_component_utils(apb_monitor)
+
+  virtual apb_if.m_mon_mp            vif;
+  uvm_analysis_port #(apb_seq_item)  mon_analysis_port;
+
+  function new(string name="apb_monitor", uvm_component parent=null);
+    super.new(name, parent);
     mon_analysis_port = new("mon_analysis_port", this);
-  endfunction;
-  
-  function void build_phase(uvm_phase phase);
-    seq_it = apb_seq_item::type_id::create("seq_it");
-    if(!uvm_config_db#(virtual apb_if.m_mon_mp)::get(this, "", "vif", vif))
-      `uvm_fatal("NO_VIF", "Can't get virtual if from the database! skill issue");
   endfunction
-  
+
+  function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    if (!uvm_config_db#(virtual apb_if.m_mon_mp)::get(this, "", "vif", vif))
+      `uvm_fatal("APB_MON_NOVIF",
+                 "virtual interface 'vif' (m_mon_mp) not set for monitor")
+  endfunction
 
   task run_phase(uvm_phase phase);
-    @(posedge vif.rst_n); // wait reset release
+    super.run_phase(phase);
     forever begin
-      // Wait for clk posedge and then check if valid transcation on the interface
       @(vif.m_mon_cb);
-      // Only track valid transactions:
-      if (vif.m_mon_cb.psel && vif.m_mon_cb.penable && vif.m_mon_cb.pready) begin
-        seq_it.paddr   = vif.m_mon_cb.paddr;
-        seq_it.pwrite  = vif.m_mon_cb.pwrite;
-        seq_it.penable = vif.m_mon_cb.penable;
-        seq_it.psel    = vif.m_mon_cb.psel;
-        seq_it.pwdata  = vif.m_mon_cb.pwdata;
-        seq_it.prdata  = vif.m_mon_cb.prdata;
-        // Broadcast (one-to-many) seq_item to whomever it may concern (in our case its scoreboard)
-        mon_analysis_port.write(seq_it);
+      // A completing beat while out of reset. Xs during reset make this false.
+      if (vif.rst_n === 1'b1 &&
+          vif.m_mon_cb.psel && vif.m_mon_cb.penable && vif.m_mon_cb.pready) begin
+        apb_seq_item tr = apb_seq_item::type_id::create("mon_item");
+        tr.addr   = vif.m_mon_cb.paddr;
+        tr.dir    = vif.m_mon_cb.pwrite ? APB_WRITE : APB_READ;
+        tr.wdata  = vif.m_mon_cb.pwdata;
+        tr.rdata  = vif.m_mon_cb.prdata;
+        tr.slverr = vif.m_mon_cb.pslverr;
+        `uvm_info("APB_MON", tr.convert2string(), UVM_HIGH)
+        mon_analysis_port.write(tr);
       end
     end
   endtask
+
 endclass
+
+`endif // APB_MONITOR_SVH
