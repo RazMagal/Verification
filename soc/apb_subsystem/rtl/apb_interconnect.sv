@@ -49,25 +49,28 @@ module apb_interconnect #(
     sel1 = (page == PAGE_W'(1));
     sel2 = (page == PAGE_W'(2));
 
-    // ---- Downstream fan-out (defaults, then per-slave psel) --------------
-    // paddr/pwrite/pwdata/penable broadcast to all; only psel is qualified.
+    // ---- Downstream fan-out (defaults, then per-slave psel/penable) ------
+    // paddr/pwrite/pwdata broadcast to all; psel AND penable are qualified per
+    // slave so an unselected slave never sees penable=1 with psel=0 (which
+    // would violate the APB "penable |-> psel" rule -- the reused protocol
+    // checker binds onto these internal buses and rightly flags it).
     d0.paddr   = up.paddr[LOCAL_W-1:0];
     d0.pwrite  = up.pwrite;
     d0.pwdata  = up.pwdata;
-    d0.penable = up.penable;
     d0.psel    = up.psel & sel0;
+    d0.penable = up.penable & sel0;
 
     d1.paddr   = up.paddr[LOCAL_W-1:0];
     d1.pwrite  = up.pwrite;
     d1.pwdata  = up.pwdata;
-    d1.penable = up.penable;
     d1.psel    = up.psel & sel1;
+    d1.penable = up.penable & sel1;
 
     d2.paddr   = up.paddr[LOCAL_W-1:0];
     d2.pwrite  = up.pwrite;
     d2.pwdata  = up.pwdata;
-    d2.penable = up.penable;
     d2.psel    = up.psel & sel2;
+    d2.penable = up.penable & sel2;
 
     // ---- Response mux back to up (defaults-first, no latches) ------------
     up.prdata  = '0;
