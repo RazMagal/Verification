@@ -3,8 +3,23 @@
 //   Parameterized address/data widths so the same interface serves both the
 //   standalone apb_timer (ADDR_WIDTH=8) and the apb_subsystem (ADDR_WIDTH=12).
 //   Clocking blocks + modports give the UVM driver/monitor race-free access.
+//
+//   The DEFAULT widths track the same `APB_ADDR_W / `APB_DATA_W macros the VIP
+//   uses (see apb_params.svh). This matters because a `virtual apb_if` handle
+//   carries its parameter values as part of its TYPE: the VIP's virtual-interface
+//   handles are unparameterized (they take these defaults), so within one build
+//   every apb_if instance the VIP binds to must share this width. Each build sets
+//   the width once (timer: default 8; subsystem: +define+APB_ADDR_W=12), keeping
+//   the whole simulation uniform.
 // -----------------------------------------------------------------------------
-interface apb_if #(parameter int ADDR_WIDTH = 8, parameter int DATA_WIDTH = 32);
+`ifndef APB_ADDR_W
+  `define APB_ADDR_W 8
+`endif
+`ifndef APB_DATA_W
+  `define APB_DATA_W 32
+`endif
+interface apb_if #(parameter int ADDR_WIDTH = `APB_ADDR_W,
+                   parameter int DATA_WIDTH = `APB_DATA_W);
   logic                  clk;
   logic                  rst_n;
   logic [ADDR_WIDTH-1:0] paddr;

@@ -43,10 +43,15 @@ module apb_subsystem (
     output logic irq1           // timer1 interrupt
 );
 
-  // ---- Downstream interface instances (local 8-bit address, 32-bit data) ---
-  apb_if #(.ADDR_WIDTH(8), .DATA_WIDTH(32)) t0_if ();
-  apb_if #(.ADDR_WIDTH(8), .DATA_WIDTH(32)) t1_if ();
-  apb_if #(.ADDR_WIDTH(8), .DATA_WIDTH(32)) mem_if ();
+  // ---- Downstream interface instances --------------------------------------
+  // All apb_if instances share ADDR_WIDTH=12 so the reusable APB VIP (whose
+  // virtual-interface handles take the default width) can bind a passive
+  // monitor to any of them in the subsystem env. The interconnect still hands
+  // each peripheral only the base-stripped low byte, so the timers/mem decode
+  // their local offsets in the low bits (upper bits are zero).
+  apb_if #(.ADDR_WIDTH(12), .DATA_WIDTH(32)) t0_if ();
+  apb_if #(.ADDR_WIDTH(12), .DATA_WIDTH(32)) t1_if ();
+  apb_if #(.ADDR_WIDTH(12), .DATA_WIDTH(32)) mem_if ();
 
   // ---- Fan out clock / reset from the upstream to each downstream ----------
   assign t0_if.clk    = apb.clk;
@@ -69,7 +74,7 @@ module apb_subsystem (
 
   // ---- Peripherals ---------------------------------------------------------
   apb_timer #(
-      .ADDR_WIDTH(8),
+      .ADDR_WIDTH(12),
       .DATA_WIDTH(32)
   ) u_timer0 (
       .apb (t0_if),
@@ -77,7 +82,7 @@ module apb_subsystem (
   );
 
   apb_timer #(
-      .ADDR_WIDTH(8),
+      .ADDR_WIDTH(12),
       .DATA_WIDTH(32)
   ) u_timer1 (
       .apb (t1_if),
@@ -85,7 +90,7 @@ module apb_subsystem (
   );
 
   apb_mem_slave #(
-      .ADDR_WIDTH(8),
+      .ADDR_WIDTH(12),
       .DATA_WIDTH(32)
   ) u_mem (
       .apb (mem_if)
