@@ -32,7 +32,13 @@ class apb_subsystem_coverage extends uvm_subscriber #(apb_seq_item);
       bins ok  = { 1'b0 };
       bins err = { 1'b1 };
     }
-    x_page_err : cross cp_page, cp_err;
+    x_page_err : cross cp_page, cp_err {
+      // Structurally-unreachable combinations: the memory slave never errors,
+      // and an unmapped page always errors. Ignore them so the cross can close.
+      ignore_bins impossible =
+          (binsof(cp_page.mem)      && binsof(cp_err.err)) ||
+          (binsof(cp_page.unmapped) && binsof(cp_err.ok));
+    }
     x_page_dir : cross cp_page, cp_dir;
   endgroup
 
