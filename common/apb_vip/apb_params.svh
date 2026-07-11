@@ -8,9 +8,20 @@
 `ifndef APB_PARAMS_SVH
 `define APB_PARAMS_SVH
 
-  // VIP transaction widths (defaults for the standalone apb_timer).
-  parameter int APB_ADDR_WIDTH = 8;
-  parameter int APB_DATA_WIDTH = 32;
+  // VIP transaction widths. Default to the standalone apb_timer (ADDR=8,DATA=32).
+  // A wider build overrides them at COMPILE TIME with a plusarg define, e.g. the
+  // apb_subsystem drives a 12-bit address bus:  +define+APB_ADDR_W=12
+  // (a package `parameter` cannot be overridden per-instance, so the width comes
+  // in through these guarded macros before the package parameters are elaborated).
+`ifndef APB_ADDR_W
+  `define APB_ADDR_W 8
+`endif
+`ifndef APB_DATA_W
+  `define APB_DATA_W 32
+`endif
+
+  parameter int APB_ADDR_WIDTH = `APB_ADDR_W;
+  parameter int APB_DATA_WIDTH = `APB_DATA_W;
 
   // APB transfer direction. pwrite == APB_WRITE.
   typedef enum bit { APB_READ = 1'b0, APB_WRITE = 1'b1 } apb_dir_e;
