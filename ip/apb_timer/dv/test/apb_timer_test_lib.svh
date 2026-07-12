@@ -153,6 +153,18 @@ class apb_timer_w1c_test extends apb_timer_base_test;
 endclass
 
 // ---------------------------------------------------------------------------
+class apb_timer_irq_mask_test extends apb_timer_base_test;
+  `uvm_component_utils(apb_timer_irq_mask_test)
+  function new(string name = "apb_timer_irq_mask_test", uvm_component parent = null);
+    super.new(name, parent);
+  endfunction
+  task run_phase(uvm_phase phase);
+    apb_timer_irq_mask_vseq s = apb_timer_irq_mask_vseq::type_id::create("s");
+    start_vseq(s, phase);
+  endtask
+endclass
+
+// ---------------------------------------------------------------------------
 class apb_timer_error_test extends apb_timer_base_test;
   `uvm_component_utils(apb_timer_error_test)
   function new(string name = "apb_timer_error_test", uvm_component parent = null);

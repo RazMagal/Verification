@@ -57,7 +57,8 @@ make -C ip/apb_timer/sim regress          # all tests x several seeds (Questa)
 
 Tests: `apb_timer_smoke_test`, `apb_timer_oneshot_test`,
 `apb_timer_periodic_test`, `apb_timer_prescale_test`, `apb_timer_w1c_test`,
-`apb_timer_error_test`, `apb_timer_reg_test`, `apb_timer_rand_test`.
+`apb_timer_irq_mask_test`, `apb_timer_error_test`, `apb_timer_reg_test`,
+`apb_timer_rand_test`.
 
 ## Run on EDA Playground
 

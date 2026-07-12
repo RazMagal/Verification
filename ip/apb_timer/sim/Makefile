@@ -49,8 +49,8 @@ xrun:
 
 # ---- multi-seed regression (Questa qverilog) -----------------------------
 TESTS = apb_timer_smoke_test apb_timer_oneshot_test apb_timer_periodic_test \
-        apb_timer_prescale_test apb_timer_w1c_test apb_timer_error_test \
-        apb_timer_reg_test apb_timer_rand_test
+        apb_timer_prescale_test apb_timer_w1c_test apb_timer_irq_mask_test \
+        apb_timer_error_test apb_timer_reg_test apb_timer_rand_test
 SEEDS = 1 2 3 4 5
 
 regress:

@@ -10,6 +10,7 @@
 //     apb_timer_periodic_vseq   - periodic N timeouts, each STATUS clear
 //     apb_timer_prescale_vseq   - PRESCALE>0 timeout latency
 //     apb_timer_w1c_vseq        - STATUS write-1-to-clear + HW-set-wins race
+//     apb_timer_irq_mask_vseq   - pending IRQ mask/unmask gating (irq=IRQ_EN&flag)
 //     apb_timer_error_vseq      - unmapped/unaligned accesses -> pslverr
 //     apb_timer_reg_hw_reset_vseq - built-in uvm_reg_hw_reset + bit_bash seqs
 //     apb_timer_rand_vseq       - randomized legal register + enable traffic
@@ -216,6 +217,52 @@ class apb_timer_w1c_vseq extends apb_timer_base_vseq;
     write_reg(regmodel.STATUS, 32'h1);            // final clear (no more HW set)
     wait_cycles(4);
     check_reg(regmodel.STATUS, 32'h0, 32'h1);
+  endtask
+endclass
+
+// ---------------------------------------------------------------------------
+// IRQ mask gating : irq == (IRQ_EN & STATUS.IRQ), exercised as a dynamic mask.
+//   The classic interrupt-controller path no other vseq creates: raise a
+//   *pending* interrupt while MASKED (IRQ_EN=0 -> irq stays low), then UNMASK it
+//   (IRQ_EN=1) so irq rises with NO new timeout, then RE-MASK (IRQ_EN=0) so irq
+//   drops while STATUS.IRQ stays set. This is stimulus only -- every edge is
+//   checked continuously by the bound SVA (a_irq_level / a_irq_deassert /
+//   a_status_sticky) and by the reference-model scoreboard; c_irq_assert covers
+//   the unmask-driven irq rise.
+class apb_timer_irq_mask_vseq extends apb_timer_base_vseq;
+  `uvm_object_utils(apb_timer_irq_mask_vseq)
+  function new(string name = "apb_timer_irq_mask_vseq"); super.new(name); endfunction
+
+  task body();
+    regmodel.reset();
+    // 1) Arm a short one-shot with the interrupt MASKED (EN=1, one-shot, IRQ_EN=0).
+    write_reg(regmodel.PRESCALE, 32'h0);
+    write_reg(regmodel.LOAD,     32'h2);
+    write_reg(regmodel.CTRL,     32'h0000_0001);   // EN only
+    wait_cycles(10);
+    // Pending but masked: STATUS.IRQ set, irq held low (proven by a_irq_level).
+    check_reg(regmodel.STATUS, 32'h1, 32'h1);
+    // One-shot auto-cleared EN; IRQ_EN still 0.
+    check_reg(regmodel.CTRL,   32'h0000_0000, 32'h0000_0007);
+
+    // 2) UNMASK the pending interrupt: set IRQ_EN=1 with EN=0 (no new timeout).
+    //    irq must rise on the mask change alone (a_irq_level; c_irq_assert covers).
+    write_reg(regmodel.CTRL, 32'h0000_0004);       // IRQ_EN=1, EN=0
+    wait_cycles(4);
+    check_reg(regmodel.STATUS, 32'h1, 32'h1);       // flag still pending
+
+    // 3) RE-MASK without clearing: IRQ_EN=0. irq drops (a_irq_deassert) but the
+    //    flag stays set (a_status_sticky -- HW never self-clears it).
+    write_reg(regmodel.CTRL, 32'h0000_0000);
+    wait_cycles(4);
+    check_reg(regmodel.STATUS, 32'h1, 32'h1);
+
+    // 4) Unmask once more, then W1C-clear: flag and irq drop together.
+    write_reg(regmodel.CTRL,   32'h0000_0004);      // IRQ_EN=1 -> irq high again
+    wait_cycles(2);
+    write_reg(regmodel.STATUS, 32'h1);              // W1C
+    check_reg(regmodel.STATUS, 32'h0, 32'h1);       // cleared
+    wait_cycles(4);                                 // irq now low (a_irq_deassert)
   endtask
 endclass
 

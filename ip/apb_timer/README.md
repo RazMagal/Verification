@@ -24,7 +24,7 @@ The reusable APB protocol checker lives in [`common/apb_vip/apb_protocol_checker
 | `apb_timer_coverage.svh` | Functional coverage (fields, crosses, prescale/load bins, events) |
 | `irq/` | Second, passive interrupt-line agent (if / item / monitor / agent) |
 | `apb_timer_env.svh`, `apb_timer_env_cfg.svh` | Env assembly + config (RAL predictor wiring) |
-| `seq/apb_timer_vseq_lib.svh` | Virtual sequences (smoke / oneshot / periodic / prescale / w1c / error / reg / rand) |
+| `seq/apb_timer_vseq_lib.svh` | Virtual sequences (smoke / oneshot / periodic / prescale / w1c / irq_mask / error / reg / rand) |
 | `test/apb_timer_test_lib.svh` | Test library (one test per scenario) |
 | `apb_timer_pkg.sv` | Compilation package (imports the reused `apb_vip_pkg`) |
 
