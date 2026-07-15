@@ -3,6 +3,10 @@
 A larger design whose verification is built almost entirely by **reuse** of the
 [`apb_timer`](../../ip/apb_timer) IP and the [`common/apb_vip`](../../common/apb_vip) VIP.
 
+> 📐 **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — visual block + UVM-environment
+> diagrams and a description of every element &nbsp;·&nbsp;
+> 📋 **[docs/REGRESSION.md](docs/REGRESSION.md)** — the test list + how to run it.
+
 ```
              ┌──────────────── apb_subsystem ────────────────┐
  APB3 (12b) ─▶│ apb_interconnect  (decode paddr[11:8])        │
