@@ -17,6 +17,10 @@ verification/
 │   ├── tb/                tb_top (DUT + interfaces + SVA binds + run_test)
 │   ├── sim/               run.f + Makefile + EDA Playground instructions
 │   └── docs/              apb_timer_spec.md (the contract)
+├── ip/apb_gpio/           IP #2: general-purpose parallel I/O — reuses the SAME VIP
+│   ├── rtl/               apb_gpio.sv + bindable SVA
+│   ├── dv/                UVM env: RAL, reference-model scoreboard, coverage, pin agent, vseqs, tests
+│   └── tb/  sim/  docs/   tb_top, run scripts, apb_gpio_spec.md (the contract)
 └── soc/apb_subsystem/     Larger design: interconnect + 2×apb_timer + memory, reusing the above
     ├── rtl/               apb_interconnect + apb_mem_slave + apb_subsystem
     ├── dv/                UVM env reusing the VIP, the timer DV env, and the timer RAL block ×2
@@ -30,8 +34,8 @@ distinguishes production DV from a one-off testbench:
 
 | Layer            | Built once in…                    | Reused in…                                            |
 |------------------|-----------------------------------|-------------------------------------------------------|
-| APB VIP agent    | `common/apb_vip`                  | timer env (1×) and subsystem env (1×, drives the fabric)|
-| APB RAL adapter  | `common/apb_vip/apb_reg_adapter`  | both register models                                  |
+| APB VIP agent    | `common/apb_vip`                  | timer env, **gpio env**, and subsystem env (drives the fabric)|
+| APB RAL adapter  | `common/apb_vip/apb_reg_adapter`  | all three register models (timer, gpio, subsystem)    |
 | APB protocol SVA | `common/apb_vip/apb_protocol_checker` | `bind` onto every APB interface instance          |
 | Timer RTL        | `ip/apb_timer/rtl`                | instantiated **twice** in the subsystem               |
 | Timer RAL block  | `ip/apb_timer/dv/..._reg_block`   | instantiated **twice** in the subsystem's hierarchical reg model |
@@ -74,6 +78,31 @@ built-in `uvm_reg_hw_reset`/`bit_bash` sequences), a **reference-model
 scoreboard**, **functional coverage**, a **virtual-sequence layer**, **config
 objects**, **factory-based** construction, and **SVA** both as reusable protocol
 checks and design-specific properties.
+
+## IP #2 — `apb_gpio`
+
+A second, independent peripheral built to prove the VIP is genuinely reusable, not
+tailored to the timer. A general-purpose parallel I/O block: per-pin direction, a
+2-flop-synchronized input path, and per-pin rising-edge interrupts. Full contract in
+[`ip/apb_gpio/docs/apb_gpio_spec.md`](../ip/apb_gpio/docs/apb_gpio_spec.md).
+
+```
+        APB3 (ADDR_WIDTH=8, DATA_WIDTH=32=NPINS)      registers
+   ┌───────────────────────────────────┐     ┌────────────────────────┐
+   │ psel/penable/pwrite/paddr/pwdata   │────▶│ DATA_OUT   DIR          │──▶ gpio_out / gpio_oe
+   │ prdata/pready/pslverr              │◀────│ DATA_IN(RO) INT_EN      │
+   └───────────────────────────────────┘     │ INT_STATUS (W1C)        │
+                                              └────────────────────────┘
+     gpio_in ─▶ [2-FF sync] ─▶ DATA_IN ─▶ rising-edge ─▶ INT_STATUS (sticky)
+                                          irq = |(INT_STATUS & INT_EN) ─▶ irq
+```
+
+The `apb_gpio` UVM env mirrors the timer's (RAL + reference-model scoreboard +
+coverage + bound SVA) but adds a **second, *active* pin agent** that drives `gpio_in`
+and observes `gpio_out`/`gpio_oe`/`irq`, and a reference model that shadows the input
+synchronizer so `DATA_IN` readback and each interrupt set are checked **cycle-exactly**.
+It reuses the APB agent, adapter, coverage, and protocol SVA from `common/apb_vip`
+unchanged — the same reuse the subsystem relies on, exercised by a different design.
 
 ## The larger design — `apb_subsystem`
 

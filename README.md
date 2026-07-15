@@ -1,9 +1,11 @@
-# APB Timer IP & Subsystem — UVM Verification Portfolio
+# APB Peripheral IPs & Subsystem — UVM Verification Portfolio
 
 A self-contained demonstration of a modern **SystemVerilog / UVM** design-verification
-flow: design an APB3 peripheral, verify it with a full-featured UVM environment, then
-reuse *every* layer — RTL, the APB VIP, the DV environment, and the register model — to
-verify a larger subsystem that instantiates the peripheral twice behind an interconnect.
+flow: design APB3 peripherals, verify each with a full-featured UVM environment built on
+one shared VIP, then reuse *every* layer — RTL, the APB VIP, the DV environment, and the
+register model — to verify a larger subsystem that instantiates a peripheral twice behind
+an interconnect. The same VIP powers **two independent IPs** (a timer and a GPIO),
+proving the VIP is genuinely reusable rather than tailored to one block.
 
 > *Built on the EDA Playground workflow (commercial simulators for UVM), version-controlled
 > here so the engineering — and its history — is visible.*
@@ -42,12 +44,16 @@ ip/apb_timer/           IP #1 — a programmable timer
   rtl/                    apb_timer.sv + timer SVA
   dv/                     UVM env: RAL, reference-model scoreboard, coverage, IRQ agent, vseqs
   tb/  sim/  docs/        tb_top, run scripts, and the register/behavior spec (the contract)
+ip/apb_gpio/            IP #2 — general-purpose parallel I/O (reuses the same VIP)
+  rtl/                    apb_gpio.sv + gpio SVA
+  dv/                     UVM env: RAL, reference-model scoreboard, coverage, pin agent, vseqs
+  tb/  sim/  docs/        tb_top, run scripts, and the spec (the contract)
 soc/apb_subsystem/      Larger design — interconnect + 2×apb_timer + memory, reusing the above
   rtl/ dv/ tb/ sim/ docs/
 docs/ARCHITECTURE.md    Architecture & verification-strategy overview
 ```
 
-## The two designs
+## The designs
 
 ### `apb_timer` (IP)
 An APB3 programmable down-counter: `CTRL` (EN / MODE / IRQ_EN), `LOAD`, `VALUE` (RO live
@@ -55,8 +61,20 @@ count), `STATUS` (W1C interrupt flag), `PRESCALE`; a prescaled counter that runs
 or periodic; a level interrupt `irq = IRQ_EN & STATUS.IRQ`; and `PSLVERR` on unmapped
 access. Full contract: [`ip/apb_timer/docs/apb_timer_spec.md`](ip/apb_timer/docs/apb_timer_spec.md).
 
-**Tests:** `smoke`, `oneshot`, `periodic`, `prescale`, `w1c`, `error` (pslverr), `reg`
-(RAL hw-reset + bit-bash), `rand`.
+**Tests:** `smoke`, `oneshot`, `periodic`, `prescale`, `w1c`, `irq_mask`, `error` (pslverr),
+`reg` (RAL hw-reset + bit-bash), `rand`.
+
+### `apb_gpio` (IP)
+An APB3 general-purpose I/O block: `DATA_OUT`, `DATA_IN` (RO, 2-flop synchronized),
+`DIR` (per-pin output enable), `INT_STATUS` (W1C rising-edge flags), `INT_EN`; a level
+interrupt `irq = |(INT_STATUS & INT_EN)`; and `PSLVERR` on unmapped access. It reuses the
+**same** APB VIP as the timer but adds a new surface — a bidirectional-style pin interface,
+an input synchronizer, and edge-triggered interrupts — verified by a second, *active* pin
+agent and a cycle-exact reference model that mirrors the synchronizer. Full contract:
+[`ip/apb_gpio/docs/apb_gpio_spec.md`](ip/apb_gpio/docs/apb_gpio_spec.md).
+
+**Tests:** `smoke`, `output_drive`, `input_capture`, `interrupt`, `w1c`, `error` (pslverr),
+`reg` (RAL hw-reset + bit-bash), `rand`.
 
 ### `apb_subsystem` (SoC-style block)
 An APB interconnect decoding `paddr[11:8]` to `timer0` @0x000, `timer1` @0x100, a memory
