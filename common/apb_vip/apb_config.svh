@@ -12,6 +12,8 @@ class apb_config extends uvm_object;
   // ACTIVE => build driver + sequencer; PASSIVE => monitor only.
   uvm_active_passive_enum is_active       = UVM_ACTIVE;
   // Driver gives up (uvm_error, no hang) if pready is not seen within this many ns.
+  // 0 => TIMEOUT DISABLED: the driver waits indefinitely for pready (use only
+  // with an external watchdog / uvm_test_done drain, or a hang is a real hang).
   int unsigned            rsp_timeout_ns  = 10000;
   // Enable functional coverage sampling in apb_coverage.
   bit                     coverage_enable = 1'b1;

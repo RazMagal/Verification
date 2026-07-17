@@ -9,7 +9,7 @@
 //     * Reset-aware: holds the bus idle during reset; a reset mid-transfer
 //       aborts the current transfer via fork/disable and the loop recovers.
 //     * Timeout: rsp_timeout_ns (from apb_config) => uvm_error instead of a
-//       hang if the slave never asserts pready.
+//       hang if the slave never asserts pready. rsp_timeout_ns == 0 disables it.
 //     * Fail-safe abort: a transfer killed by reset/timeout never reports
 //       success (see xfer_ok below).
 //   item_done() returns with rdata/slverr written into req so RAL front-door
@@ -109,9 +109,14 @@ class apb_driver extends uvm_driver #(apb_seq_item);
             "Reset asserted mid-transfer; dropping current APB transfer")
         end
         begin : xfer_timeout
-          #(1ns * rsp_timeout_ns);
-          `uvm_error("APB_DRV_TIMEOUT", $sformatf(
-            "Slave did not complete transfer (pready) within %0d ns", rsp_timeout_ns))
+          if (rsp_timeout_ns > 0) begin
+            #(1ns * rsp_timeout_ns);
+            `uvm_error("APB_DRV_TIMEOUT", $sformatf(
+              "Slave did not complete transfer (pready) within %0d ns", rsp_timeout_ns))
+          end
+          else begin
+            wait (0);          // rsp_timeout_ns == 0 => timeout disabled
+          end
         end
       join_any
       disable fork;
