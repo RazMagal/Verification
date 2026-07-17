@@ -10,6 +10,8 @@
 //       aborts the current transfer via fork/disable and the loop recovers.
 //     * Timeout: rsp_timeout_ns (from apb_config) => uvm_error instead of a
 //       hang if the slave never asserts pready.
+//     * Fail-safe abort: a transfer killed by reset/timeout never reports
+//       success (see xfer_ok below).
 //   item_done() returns with rdata/slverr written into req so RAL front-door
 //   reads work (provides_responses=0 in the adapter).
 // -----------------------------------------------------------------------------
@@ -22,6 +24,11 @@ class apb_driver extends uvm_driver #(apb_seq_item);
   virtual apb_if vif;
   apb_config     cfg;
   int unsigned   rsp_timeout_ns = 10000;
+
+  // Set only when drive_transfer() runs to completion (response captured).
+  // Cleared before every fork so an abort (reset / timeout) is distinguishable
+  // from a real completion: see run_phase.
+  bit            xfer_ok;
 
   function new(string name="apb_driver", uvm_component parent=null);
     super.new(name, parent);
@@ -70,6 +77,10 @@ class apb_driver extends uvm_driver #(apb_seq_item);
 
     // Return to idle at this same edge (penable deasserts next cycle).
     drive_idle();
+
+    // LAST statement: reaching here means the response above is real. If the
+    // fork in run_phase kills this task earlier, xfer_ok stays 0.
+    xfer_ok = 1'b1;
   endtask
 
   task run_phase(uvm_phase phase);
@@ -83,6 +94,8 @@ class apb_driver extends uvm_driver #(apb_seq_item);
       end
 
       seq_item_port.get_next_item(req);
+
+      xfer_ok = 1'b0;          // cleared before every attempt (see below)
 
       fork : xfer
         drive_transfer(req);
@@ -98,6 +111,17 @@ class apb_driver extends uvm_driver #(apb_seq_item);
         end
       join_any
       disable fork;
+
+      // An aborted transfer (reset or timeout) never reached the response
+      // capture in drive_transfer, so req still holds its untouched defaults
+      // (rdata=0, slverr=0). The adapter sets provides_responses=0, so
+      // uvm_reg_map calls bus2reg on THIS request object: leaving slverr=0
+      // would map the abort to UVM_IS_OK + data=0 and the RAL would fail open.
+      // Forcing slverr=1 makes bus2reg map it to UVM_NOT_OK.
+      if (!xfer_ok) begin
+        req.slverr = 1'b1;     // aborted/timed-out transfer must surface as an error
+        req.rdata  = '0;
+      end
 
       drive_idle();            // ensure bus is idle after normal/aborted transfer
       seq_item_port.item_done();
