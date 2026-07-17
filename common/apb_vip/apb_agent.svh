@@ -43,6 +43,11 @@ class apb_agent extends uvm_agent;
     end
     uvm_config_db#(apb_config)::set(this, "*", "apb_config", cfg);
 
+    // Keep the INHERITED uvm_agent::is_active in sync with the cfg, so
+    // get_is_active() agrees with what we actually build (it defaults to
+    // UVM_ACTIVE and would otherwise lie about a passive agent).
+    is_active = cfg.is_active;
+
     // Virtual interface: one handle in, modport handles pushed to children.
     if (!uvm_config_db#(virtual apb_if)::get(this, "", "apb_vif", apb_vif))
       `uvm_fatal("APB_AGENT_NOVIF",
