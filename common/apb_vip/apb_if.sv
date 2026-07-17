@@ -54,8 +54,12 @@ interface apb_if #(parameter int ADDR_WIDTH = `APB_ADDR_W,
     output paddr, pwrite, psel, penable, pwdata;
   endclocking
 
+  // rst_n is sampled through the clocking block (preponed) so the monitor does
+  // not mix a preponed bus sample with a post-edge (Active-region) reset read;
+  // at an async reset coincident with a posedge the two disagree and a
+  // legitimately completed beat would be dropped.
   clocking m_mon_cb @(posedge clk);
-    input  prdata, pready, pslverr, paddr, pwrite, psel, penable, pwdata;
+    input  prdata, pready, pslverr, paddr, pwrite, psel, penable, pwdata, rst_n;
   endclocking
 
   modport m_drv_mp (clocking m_drv_cb, input rst_n);

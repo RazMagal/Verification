@@ -1,6 +1,7 @@
 // -----------------------------------------------------------------------------
 // apb_monitor.svh : passive APB observer.
-//   Samples through the m_mon_cb clocking block. On a completed ACCESS beat
+//   Samples EVERYTHING (bus + rst_n) through the m_mon_cb clocking block, i.e.
+//   entirely from the preponed region. On a completed ACCESS beat
 //   (psel && penable && pready) it CREATES A FRESH item, populates
 //   addr/dir/wdata/rdata/slverr, and broadcasts it. A new object per beat is
 //   mandatory so downstream subscribers (scoreboard, coverage) each get their
@@ -32,7 +33,10 @@ class apb_monitor extends uvm_monitor;
     forever begin
       @(vif.m_mon_cb);
       // A completing beat while out of reset. Xs during reset make this false.
-      if (vif.rst_n === 1'b1 &&
+      // rst_n comes from the clocking block: same (preponed) sample point as
+      // the bus, so an async reset at this posedge cannot retro-kill a beat
+      // that had already completed by the preponed region.
+      if (vif.m_mon_cb.rst_n === 1'b1 &&
           vif.m_mon_cb.psel && vif.m_mon_cb.penable && vif.m_mon_cb.pready) begin
         apb_seq_item tr = apb_seq_item::type_id::create("mon_item");
         tr.addr   = vif.m_mon_cb.paddr;
