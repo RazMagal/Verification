@@ -1,3 +1,4 @@
+`timescale 1ns/1ps
 // -----------------------------------------------------------------------------
 // apb_if : AMBA APB3 interface (shared VIP)
 //   Parameterized address/data widths so the same interface serves both the

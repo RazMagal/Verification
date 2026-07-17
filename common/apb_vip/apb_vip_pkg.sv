@@ -1,5 +1,10 @@
+`timescale 1ns/1ps
 // -----------------------------------------------------------------------------
 // apb_vip_pkg.sv : compilation package for the reusable APB3 master VIP.
+//   The `timescale above is REQUIRED, not decorative: the VIP compiles before
+//   any tb top in every run.f, so without it the driver's #(1ns*rsp_timeout_ns)
+//   would inherit the tool default precision (and VCS errors out on a compile
+//   that mixes files that have a timescale with files that don't).
 //
 //   Compile order (this file compiles the classes; the interface and SVA are
 //   compiled SEPARATELY at $unit, since they cannot live inside a package):

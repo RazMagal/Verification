@@ -1,3 +1,4 @@
+`timescale 1ns/1ps
 // -----------------------------------------------------------------------------
 // apb_protocol_checker : reusable, bindable APB3 protocol assertions (plain SVA)
 //
