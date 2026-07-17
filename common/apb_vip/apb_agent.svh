@@ -9,9 +9,16 @@
 //    uvm_config_db#(apb_config)::set(ctxt, "<path>.<agent>", "apb_config", cfg);
 //
 //  Set internally by this agent for its children (do NOT set these yourself):
-//    "vif"        (virtual apb_if.m_drv_mp)  -> apb_driver
-//    "vif"        (virtual apb_if.m_mon_mp)  -> apb_monitor
-//    "apb_config" (apb_config)               -> whole sub-tree (driver, coverage)
+//    "vif"        (virtual apb_if)  -> apb_driver
+//    "vif"        (virtual apb_if)  -> apb_monitor
+//    "apb_config" (apb_config)      -> whole sub-tree (driver, coverage)
+//
+//  NOTE: children take a PLAIN `virtual apb_if`, deliberately not a
+//  modport-qualified type. Pushing a modport-less handle into a
+//  `virtual apb_if.m_<x>_mp` config_db entry needs an implicit conversion that
+//  strict tools reject at elaboration. The clocking blocks (m_drv_cb/m_mon_cb)
+//  and rst_n resolve identically through the plain handle; the modports remain
+//  in apb_if for direct (non-virtual) instance use.
 //  =========================================================================
 // -----------------------------------------------------------------------------
 `ifndef APB_AGENT_SVH
@@ -48,11 +55,11 @@ class apb_agent extends uvm_agent;
     // UVM_ACTIVE and would otherwise lie about a passive agent).
     is_active = cfg.is_active;
 
-    // Virtual interface: one handle in, modport handles pushed to children.
+    // Virtual interface: one handle in, same handle pushed to children.
     if (!uvm_config_db#(virtual apb_if)::get(this, "", "apb_vif", apb_vif))
       `uvm_fatal("APB_AGENT_NOVIF",
                  "virtual apb_if 'apb_vif' not set for agent")
-    uvm_config_db#(virtual apb_if.m_mon_mp)::set(this, "apb_monitor", "vif", apb_vif);
+    uvm_config_db#(virtual apb_if)::set(this, "apb_monitor", "vif", apb_vif);
 
     // Monitor + coverage: always present (passive-friendly).
     mon = apb_monitor::type_id::create("apb_monitor", this);
@@ -61,7 +68,7 @@ class apb_agent extends uvm_agent;
 
     // Driver + sequencer: only when active.
     if (cfg.is_active == UVM_ACTIVE) begin
-      uvm_config_db#(virtual apb_if.m_drv_mp)::set(this, "apb_driver", "vif", apb_vif);
+      uvm_config_db#(virtual apb_if)::set(this, "apb_driver", "vif", apb_vif);
       drv  = apb_driver::type_id::create("apb_driver", this);
       seqr = apb_sequencer::type_id::create("apb_sequencer", this);
     end

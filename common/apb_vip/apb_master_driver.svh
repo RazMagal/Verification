@@ -19,9 +19,9 @@
 class apb_driver extends uvm_driver #(apb_seq_item);
   `uvm_component_utils(apb_driver)
 
-  virtual apb_if.m_drv_mp vif;
-  apb_config              cfg;
-  int unsigned            rsp_timeout_ns = 10000;
+  virtual apb_if vif;
+  apb_config     cfg;
+  int unsigned   rsp_timeout_ns = 10000;
 
   function new(string name="apb_driver", uvm_component parent=null);
     super.new(name, parent);
@@ -29,9 +29,9 @@ class apb_driver extends uvm_driver #(apb_seq_item);
 
   function void build_phase(uvm_phase phase);
     super.build_phase(phase);
-    if (!uvm_config_db#(virtual apb_if.m_drv_mp)::get(this, "", "vif", vif))
+    if (!uvm_config_db#(virtual apb_if)::get(this, "", "vif", vif))
       `uvm_fatal("APB_DRV_NOVIF",
-                 "virtual interface 'vif' (m_drv_mp) not set for driver")
+                 "virtual interface 'vif' (virtual apb_if) not set for driver")
     if (uvm_config_db#(apb_config)::get(this, "", "apb_config", cfg))
       rsp_timeout_ns = cfg.rsp_timeout_ns;
   endfunction

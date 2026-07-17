@@ -13,7 +13,7 @@
 class apb_monitor extends uvm_monitor;
   `uvm_component_utils(apb_monitor)
 
-  virtual apb_if.m_mon_mp            vif;
+  virtual apb_if                     vif;
   uvm_analysis_port #(apb_seq_item)  mon_analysis_port;
 
   function new(string name="apb_monitor", uvm_component parent=null);
@@ -23,9 +23,9 @@ class apb_monitor extends uvm_monitor;
 
   function void build_phase(uvm_phase phase);
     super.build_phase(phase);
-    if (!uvm_config_db#(virtual apb_if.m_mon_mp)::get(this, "", "vif", vif))
+    if (!uvm_config_db#(virtual apb_if)::get(this, "", "vif", vif))
       `uvm_fatal("APB_MON_NOVIF",
-                 "virtual interface 'vif' (m_mon_mp) not set for monitor")
+                 "virtual interface 'vif' (virtual apb_if) not set for monitor")
   endfunction
 
   task run_phase(uvm_phase phase);
