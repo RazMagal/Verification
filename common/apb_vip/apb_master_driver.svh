@@ -100,7 +100,11 @@ class apb_driver extends uvm_driver #(apb_seq_item);
       fork : xfer
         drive_transfer(req);
         begin : reset_abort
-          @(negedge vif.rst_n);
+          // LEVEL-sensitive, not @(negedge): get_next_item() above blocks for an
+          // unbounded time, so reset may already be asserted when this fork
+          // starts. An edge-triggered wait would miss it and let the driver
+          // drive a full transfer through reset.
+          wait (vif.rst_n !== 1'b1);
           `uvm_warning("APB_DRV_RST",
             "Reset asserted mid-transfer; dropping current APB transfer")
         end
