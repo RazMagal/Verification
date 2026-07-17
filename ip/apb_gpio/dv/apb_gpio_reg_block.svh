@@ -143,8 +143,14 @@ class apb_gpio_reg_block extends uvm_reg_block;
     // W1C set by hardware on a rising edge, so a walking-ones write/read-back
     // does not model them. Their real behaviour is checked by the reference-
     // model scoreboard instead.
-    DATA_IN.set_attribute   ("NO_REG_BIT_BASH_TEST", "1");
-    INT_STATUS.set_attribute("NO_REG_BIT_BASH_TEST", "1");
+    //
+    // uvm_reg_bit_bash_seq reads this exclusion from the RESOURCE DB in the
+    // "REG::" namespace (uvm_resource_db#(bit)::get_by_name). uvm_reg has no
+    // attribute API in UVM 1.2, so set_attribute() must not be used here.
+    uvm_resource_db#(bit)::set({"REG::", DATA_IN.get_full_name()},
+                               "NO_REG_BIT_BASH_TEST", 1);
+    uvm_resource_db#(bit)::set({"REG::", INT_STATUS.get_full_name()},
+                               "NO_REG_BIT_BASH_TEST", 1);
 
     // ---- address map : base 0x0, 4 bytes/word, byte-addressed, little-endian
     default_map = create_map("default_map", 'h0, 4, UVM_LITTLE_ENDIAN, 1);

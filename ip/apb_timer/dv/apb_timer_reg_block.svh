@@ -154,11 +154,19 @@ class apb_timer_reg_block extends uvm_reg_block;
 
     // Exclude the volatile / HW-updated registers from the automated bit-bash
     // test: VALUE is a RO live counter and STATUS.IRQ is W1C set by hardware,
-    // so a walking-ones write/read-back does not model them (and can spuriously
-    // fail on some UVM library versions). Their real behavior is checked by the
-    // reference-model scoreboard instead.
-    VALUE.set_attribute ("NO_REG_BIT_BASH_TEST", "1");
-    STATUS.set_attribute("NO_REG_BIT_BASH_TEST", "1");
+    // so a walking-ones write/read-back does not model them. Their real behavior
+    // is checked by the reference-model scoreboard instead.
+    //
+    // uvm_reg_bit_bash_seq reads this exclusion from the RESOURCE DB in the
+    // "REG::" namespace (uvm_resource_db#(bit)::get_by_name). uvm_reg has no
+    // attribute API in UVM 1.2, so set_attribute() must not be used here.
+    // configure() above already set each register's parent, so get_full_name()
+    // resolves to the correct per-instance hierarchical name (e.g. when this
+    // block is reused twice inside the subsystem's hierarchical model).
+    uvm_resource_db#(bit)::set({"REG::", VALUE.get_full_name()},
+                               "NO_REG_BIT_BASH_TEST", 1);
+    uvm_resource_db#(bit)::set({"REG::", STATUS.get_full_name()},
+                               "NO_REG_BIT_BASH_TEST", 1);
 
     // ---- address map : base 0x0, 4 bytes/word, byte-addressed, little-endian
     default_map = create_map("default_map", 'h0, 4, UVM_LITTLE_ENDIAN, 1);
