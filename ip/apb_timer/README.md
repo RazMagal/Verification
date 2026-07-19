@@ -6,6 +6,8 @@ UVM environment.
 
 - **Spec (the contract):** [`docs/apb_timer_spec.md`](docs/apb_timer_spec.md) — register
   map, counter/prescaler/IRQ behavior, and `PSLVERR` semantics.
+- **Regression list:** [`docs/REGRESSION.md`](docs/REGRESSION.md) — the 9 tests,
+  what each one proves, and how to run them.
 
 ## RTL (`rtl/`)
 | File | Role |

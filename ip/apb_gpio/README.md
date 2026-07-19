@@ -8,6 +8,8 @@ surface — pin I/O, a 2-flop input synchronizer, and edge-triggered interrupts.
 - **Spec (the contract):** [`docs/apb_gpio_spec.md`](docs/apb_gpio_spec.md) — port
   list, register map, output/synchronizer/interrupt behavior, and the internal
   signal names the bound SVA and reference model rely on.
+- **Regression list:** [`docs/REGRESSION.md`](docs/REGRESSION.md) — the 8 tests,
+  what each one proves, and how to run them.
 
 ## RTL (`rtl/`)
 | File | Role |
