@@ -58,7 +58,11 @@ make -C soc/apb_subsystem/sim regress
 
 ### On EDA Playground
 
-1. Left pane: choose UVM 1.2 and a commercial simulator (Questa / VCS / Xcelium).
+1. Left pane: choose UVM **1.2** and a simulator. **Aldec Riviera-PRO** is the one
+   to pick — it is a full commercial SystemVerilog/UVM/SVA simulator and is the
+   only UVM-capable choice that needs *no account validation*, so anyone with a
+   Google login can run this suite. Questa / VCS / Xcelium also work but are
+   gated behind a pre-approved (institutional) email address.
 2. Compile/run options: add `+define+APB_ADDR_W=12` (or paste the contents of
    `sim/run.f`) and select the test with `+UVM_TESTNAME=<test from the table>`.
 3. Paste the sources in `run.f` compile order: interfaces → packages → RTL → SVA

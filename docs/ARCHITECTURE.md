@@ -126,7 +126,8 @@ traffic, decode-error injection).
 ## Running
 
 The RTL and SVA are lint-clean (Verible) locally. The full UVM environments are
-compiled and run on commercial simulators (VCS / Questa / Xcelium) — see each
+compiled and run on commercial simulators (Aldec Riviera-PRO / VCS / Questa /
+Xcelium; Riviera-PRO needs no EDA Playground account validation) — see each
 IP's `sim/README.md` for the exact compile order, `Makefile` targets, and
 **EDA Playground** setup (which files go in the Design vs Testbench panes, the
 UVM version, and the `+UVM_TESTNAME=...` run command).

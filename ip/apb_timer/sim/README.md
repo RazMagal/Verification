@@ -63,7 +63,9 @@ Tests: `apb_timer_smoke_test`, `apb_timer_oneshot_test`,
 ## Run on EDA Playground
 
 - Language: **SystemVerilog / UVM**, UVM version **1.2**.
-- Tool: Questa / VCS / Xcelium (any).
+- Tool: **Aldec Riviera-PRO** — full UVM/SVA support and the only UVM-capable
+  simulator on Playground that needs no account validation. Questa / VCS /
+  Xcelium work too, but require a pre-approved institutional email.
 - Enable your simulator's **SVA** and **coverage** if you want the bound
   properties and covergroups reported.
 - Run/plusargs field: `+UVM_TESTNAME=apb_timer_oneshot_test` (or any test above).
