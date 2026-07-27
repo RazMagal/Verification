@@ -1,0 +1,301 @@
+// -----------------------------------------------------------------------------
+// photonic_ring_tuner_env_cfg.svh : top-level configuration for the tuner env,
+//   plus `ring_cfg` -- the randomizable OPTICAL configuration that is the real
+//   stimulus of this environment.
+//
+//   The control loop is CLOSED through the optical model, so there is no
+//   pre-computable data stream to randomize: the interesting stimulus is the
+//   PHYSICS (where the resonance sits, how sharp it is, how slow the heater is,
+//   how bright the laser is). ring_cfg carries the spec-7.4 parameters, the
+//   constraint regimes that make each test's outcome deterministic, and the
+//   apply() that pushes them onto ring_if.
+//
+//   NOTE ON `real` AND randomize(): SystemVerilog cannot randomize real
+//   variables (they may not appear in constraints), so every knob is a rand int
+//   and the reals are DERIVED in post_randomize(). tau is carried as tau_x10 so
+//   the time constant has 0.1-cycle resolution.
+// -----------------------------------------------------------------------------
+`ifndef PHOTONIC_RING_TUNER_ENV_CFG_SVH
+`define PHOTONIC_RING_TUNER_ENV_CFG_SVH
+
+// Physical regime selected by a test. Each regime is constrained so that ONE
+// property of the loop is violated (or none), which is what makes the negative
+// tests self-checking instead of hopeful.
+typedef enum {
+  RING_MODE_DEFAULT,       // fixed mid-range ring (smoke / register tests)
+  RING_MODE_LOCKABLE,      // randomized ring the DEFAULT register set can lock
+  RING_MODE_SLOW_THERMAL,  // tau >> programmed SETTLE  -> acquisition must fail
+  RING_MODE_DARK,          // laser_on = 0              -> SWEEP_ERR, never locks
+  RING_MODE_RAIL           // resonance beyond DAC_MAX  -> RAIL_ERR, never locks
+} ring_mode_e;
+
+// What the scoreboard must prove about this run (spec 7.5).
+typedef enum {
+  RING_EXP_NONE,           // no optical outcome asserted (register-only tests)
+  RING_EXP_LOCK,           // must acquire: checks 1 (deadline), 2 (accuracy), 3 (stability)
+  RING_EXP_LOCK_THEN_LOSS, // must acquire, then LOSE the lock when the ring is
+                           // deliberately disturbed, then re-acquire (spec 3.4:
+                           // locked_q is a live status, not sticky)
+  RING_EXP_NO_LOCK,        // must NOT acquire            : check 4
+  RING_EXP_SWEEP_ERR,      // must NOT acquire + SWEEP_ERR: check 4
+  RING_EXP_RAIL_ERR        // RAIL_ERR + saturation, no wrap, no lock : check 5
+} ring_exp_e;
+
+// -----------------------------------------------------------------------------
+class ring_cfg extends uvm_object;
+
+  // DAC geometry (must match the tb's DUT parameterization). Signed `int` so it
+  // never drags a constraint expression into unsigned comparison.
+  int dac_max = 4095;
+
+  // Regime selector (NOT rand: the test picks it, the constraints follow).
+  ring_mode_e  mode = RING_MODE_LOCKABLE;
+
+  // ---- randomized integer knobs -------------------------------------------
+  rand int res_code_i;    // resonance position in DAC codes (may exceed dac_max)
+  rand int fwhm_code_i;   // linewidth, DAC codes
+  rand int tau_x10;       // thermal time constant x 10, clock cycles
+  rand int p_peak_i;      // ADC LSBs at perfect alignment
+  rand int noise_i;       // uniform ADC noise amplitude, LSBs
+  rand bit laser_on;
+
+  // ---- derived reals handed to ring_if (spec 7.4) -------------------------
+  real res_code;
+  real fwhm_code;
+  real tau_cycles;
+  real p_peak_lsb;
+  real noise_lsb;
+
+  `uvm_object_utils_begin(ring_cfg)
+    `uvm_field_enum(ring_mode_e, mode, UVM_ALL_ON)
+    `uvm_field_int (res_code_i,  UVM_ALL_ON | UVM_DEC)
+    `uvm_field_int (fwhm_code_i, UVM_ALL_ON | UVM_DEC)
+    `uvm_field_int (tau_x10,     UVM_ALL_ON | UVM_DEC)
+    `uvm_field_int (p_peak_i,    UVM_ALL_ON | UVM_DEC)
+    `uvm_field_int (noise_i,     UVM_ALL_ON | UVM_DEC)
+    `uvm_field_int (laser_on,    UVM_ALL_ON)
+  `uvm_object_utils_end
+
+  // ---- global sanity bounds ------------------------------------------------
+  constraint c_common {
+    res_code_i  inside {[0:6000]};      // may sit outside the DAC range (rail)
+    fwhm_code_i inside {[96:1024]};
+    tau_x10     inside {[10:8000]};     // tau 1.0 .. 800.0 cycles, never < 1
+    p_peak_i    inside {[1024:3072]};   // >> MINPOW (0x100) and < ADC full scale
+    noise_i     inside {[0:8]};
+  }
+
+  // ---- fixed mid-range ring for register-only tests ------------------------
+  constraint c_default {
+    mode == RING_MODE_DEFAULT -> {
+      laser_on    == 1'b1;
+      res_code_i  == 2048;
+      fwhm_code_i == 512;
+      tau_x10     == 40;
+      p_peak_i    == 3000;
+      noise_i     == 0;
+    }
+  }
+
+  // ---- LOCKABLE : the DEFAULT register set must acquire on this ring -------
+  //  With SETTLE = 32 and tau <= 8 the ring reaches >98% of every commanded step
+  //  before the ADC is sampled, so the dither measures a true SPATIAL gradient.
+  //  fwhm >= 384 keeps the loop's residual detuning inside the lock threshold:
+  //  the loop stops moving once |p_hi - p_lo| <= THRESH (8), and with the
+  //  DEFAULT dither of 4 the residual |eps| is at most 2 codes, giving
+  //  |p_hi - p_lo| ~= 64*p_peak*|eps|/fwhm^2 <= 2.7 LSB -- comfortably under
+  //  THRESH even with the +/-2 LSB noise this mode allows. A narrower ring would
+  //  limit-cycle instead of locking, which is a legitimate behaviour but not
+  //  what this test is about.
+  constraint c_lockable {
+    mode == RING_MODE_LOCKABLE -> {
+      laser_on    == 1'b1;
+      res_code_i  inside {[384:3712]};   // reachable, clear of both rails
+      fwhm_code_i inside {[384:1024]};
+      tau_x10     inside {[10:80]};      // tau 1..8 cycles << SETTLE = 32
+      p_peak_i    inside {[1024:3072]};
+      noise_i     inside {[0:2]};
+    }
+  }
+
+  // ---- SLOW_THERMAL : the headline bug -------------------------------------
+  //  The vseq programs SETTLE = 1 while tau is 400..800 cycles, so the ADC is
+  //  sampled long before the ring has thermally settled. During the coarse sweep
+  //  the ring temperature lags the DAC ramp by L = rate * tau ~= 2300..3500
+  //  codes, so the sweep records its peak at a code roughly L ABOVE the real
+  //  resonance. Because L > (dac_max - res_code)/2, the temperature at the end
+  //  of the sweep is BELOW that recorded code: the fine loop then heats away
+  //  from the resonance, the photodiode goes dark, the MINPOW guard (correctly)
+  //  refuses to declare lock, and the DAC drives into the rail. Whatever the
+  //  seed, `locked` must never rise. fwhm <= 192 keeps the residual power at the
+  //  loop's resting point well under MINPOW = 0x100.
+  constraint c_slow_thermal {
+    mode == RING_MODE_SLOW_THERMAL -> {
+      laser_on    == 1'b1;
+      res_code_i  inside {[128:640]};
+      fwhm_code_i inside {[96:192]};
+      tau_x10     inside {[4000:8000]};  // tau 400..800 cycles >> SETTLE = 1
+      p_peak_i    inside {[2048:3072]};
+      noise_i     inside {[0:4]};
+    }
+  }
+
+  // ---- DARK : unplugged fibre / laser off ----------------------------------
+  //  trans is forced to 0, so the ADC reads read-noise only (<= 8 LSB, far below
+  //  MINPOW = 0x100). The sweep finds nothing above MINPOW anywhere in the
+  //  tuning range -> SWEEP_ERR, and the flat "both probes equal" condition must
+  //  NOT be mistaken for a peak (spec 3.4).
+  constraint c_dark {
+    mode == RING_MODE_DARK -> {
+      laser_on    == 1'b0;
+      res_code_i  inside {[384:3712]};
+      fwhm_code_i inside {[384:1024]};
+      tau_x10     inside {[10:80]};
+      p_peak_i    inside {[1024:3072]};
+      noise_i     inside {[0:8]};
+    }
+  }
+
+  // ---- RAIL : resonance parked just beyond the top of the DAC range --------
+  //  delta = res_code - dac_max is held in [fwhm/4 : fwhm/3], i.e. right around
+  //  the steepest point of the lineshape (|dP/dd| peaks at |d| = 0.29*fwhm):
+  //    * near enough that the last sweep point still sees >= MINPOW light, so
+  //      the sweep SUCCEEDS and the fine loop actually engages (a resonance far
+  //      outside the range would just give SWEEP_ERR, a different test);
+  //    * steep enough that the probe difference AT the rail,
+  //      ~4*|dP/dd| ~= 5.2*p_peak/fwhm >= 25 LSB, stays well clear of
+  //      THRESH (8) plus the worst-case +/-4 LSB probe noise. The loop therefore
+  //      keeps saying "hotter" every single iteration: it saturates, sets
+  //      RAIL_ERR, and can NEVER satisfy at_peak (move_up is always true), so
+  //      "no lock" is a property of the geometry rather than of luck.
+  constraint c_rail {
+    mode == RING_MODE_RAIL -> {
+      laser_on    == 1'b1;
+      fwhm_code_i inside {[384:512]};
+      p_peak_i    inside {[2560:3072]};
+      tau_x10     inside {[10:80]};
+      noise_i     inside {[0:2]};
+      res_code_i >= dac_max + (fwhm_code_i / 4);
+      res_code_i <= dac_max + (fwhm_code_i / 3);
+    }
+  }
+
+  function new(string name = "ring_cfg");
+    super.new(name);
+    res_code_i  = 2048;
+    fwhm_code_i = 512;
+    tau_x10     = 40;
+    p_peak_i    = 3000;
+    noise_i     = 0;
+    laser_on    = 1'b1;
+    update_reals();
+  endfunction
+
+  // reals are DERIVED, never randomized (SV forbids rand real).
+  function void update_reals();
+    res_code   = real'(res_code_i);
+    fwhm_code  = real'(fwhm_code_i);
+    tau_cycles = real'(tau_x10) / 10.0;
+    p_peak_lsb = real'(p_peak_i);
+    noise_lsb  = real'(noise_i);
+  endfunction
+
+  function void post_randomize();
+    update_reals();
+  endfunction
+
+  // Push the physics onto the model's interface. Called before reset is
+  // released (and again by a vseq that changes the ring mid-test).
+  function void apply(virtual ring_if vif);
+    if (vif == null) return;
+    vif.res_code   = res_code;
+    vif.fwhm_code  = fwhm_code;
+    vif.tau_cycles = tau_cycles;
+    vif.p_peak_lsb = p_peak_lsb;
+    vif.noise_lsb  = noise_lsb;
+    vif.laser_on   = laser_on;
+  endfunction
+
+  // settle_q / tau_cycles -- the ONLY thing the controller can observe about
+  // the thermal time constant (spec 7.3), and the axis the coverage cross uses.
+  function real settle_ratio(int unsigned settle_q);
+    return real'(settle_q) / ((tau_cycles < 1.0) ? 1.0 : tau_cycles);
+  endfunction
+
+  function string convert2string();
+    return $sformatf(
+      "%s: res=%0.1f fwhm=%0.1f tau=%0.1f p_peak=%0.1f noise=%0.1f laser=%0b",
+      mode.name(), res_code, fwhm_code, tau_cycles, p_peak_lsb, noise_lsb,
+      laser_on);
+  endfunction
+
+endclass
+
+// -----------------------------------------------------------------------------
+class photonic_ring_tuner_env_cfg extends uvm_object;
+  `uvm_object_utils(photonic_ring_tuner_env_cfg)
+
+  // Reused VIP agent configuration (is_active, timeout, coverage_enable).
+  apb_config                    m_apb_cfg;
+
+  // RAL model (created + built + locked by the test).
+  photonic_ring_tuner_reg_block reg_block;
+
+  // The optical stimulus (randomized by the test).
+  ring_cfg                      m_ring_cfg;
+
+  // Env knobs.
+  bit          en_scoreboard     = 1'b1;
+  bit          en_coverage       = 1'b1;
+
+  // What the scoreboard must prove about this run.
+  ring_exp_e   exp_outcome       = RING_EXP_NONE;
+
+  // Safety factor applied to the computed acquisition deadline (check 1). The
+  // deadline itself is derived from the PROGRAMMED sweep/settle/dither values,
+  // so it tracks whatever the vseq programs.
+  int unsigned deadline_margin_x = 2;
+
+  // How long a vseq HOLDS an acquired lock, in clocks, so that check 3
+  // (stability) has a window to observe. It is used in two places, which is why
+  // it lives here rather than in the vseq:
+  //   * the lock vseq waits this many clocks with the loop locked;
+  //   * the scoreboard requires the LONGEST observed locked run in a
+  //     RING_EXP_LOCK test to be at least stability_window/2 clocks before it
+  //     will call check 3 satisfied. Without that, a run that locked for three
+  //     clocks and then dropped would "pass" the stability check having proved
+  //     nothing about stability.
+  int unsigned stability_window  = 2000;
+
+  function new(string name = "photonic_ring_tuner_env_cfg");
+    super.new(name);
+  endfunction
+
+  // Acquisition deadline in clocks, derived from the PROGRAMMED step/settle
+  // values (spec 7.5 check 1) rather than being a magic number:
+  //   coarse sweep : ceil((DAC_MAX+1)/sweep_eff) points, each WAIT(settle)+SAMP
+  //   fine lock    : enough iterations to walk half a sweep step in dither
+  //                  steps, plus LOCK_N at-peak iterations, plus slack; each
+  //                  iteration is HI_WAIT+HI_SAMP+LO_WAIT+LO_SAMP+UPDATE
+  // Multiplied by deadline_margin_x so it stays a real deadline without being
+  // seed-flaky. ONE definition, used by the scoreboard (which enforces it) and
+  // by the vseqs (which size their observation windows with it).
+  function int unsigned acq_deadline(int unsigned settle_q,
+                                     int unsigned sweep_eff,
+                                     int unsigned dither_eff);
+    int unsigned pts;
+    int unsigned cpp;
+    int unsigned iters;
+    int unsigned cpi;
+    int unsigned sw  = (sweep_eff  == 0) ? 1 : sweep_eff;
+    int unsigned dit = (dither_eff == 0) ? 1 : dither_eff;
+    pts   = (4095 + sw) / sw;
+    cpp   = settle_q + 3;
+    iters = (sw / dit) + 4 + 32;          // 4 == LOCK_N
+    cpi   = 2 * (settle_q + 2) + 3;
+    return deadline_margin_x * (pts * cpp + iters * cpi) + 500;
+  endfunction
+
+endclass
+
+`endif // PHOTONIC_RING_TUNER_ENV_CFG_SVH
