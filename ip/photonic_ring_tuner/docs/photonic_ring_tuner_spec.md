@@ -72,6 +72,14 @@ module photonic_ring_tuner #(
 - `dac_code` is driven **every cycle**, including during reset (`0`) and while idle.
   A heater DAC has no high-impedance state.
 - `DAC_MAX = 2**DAC_WIDTH - 1`, `DAC_MIN = 0`. There are no programmable rails in v1.0.
+- **Legal parameterization**, checked at *elaboration* (a violation is a `$fatal`, not
+  a silently mis-built loop): `DATA_WIDTH = 32` — pinned by the §2 packed-field
+  layout; `ADDR_WIDTH ≥ 5` — must map `0x00..0x18`; `LOCK_N ≥ 1`;
+  `1 ≤ DAC_WIDTH ≤ DATA_WIDTH`; `1 ≤ ADC_WIDTH ≤ 19`. That ADC upper bound comes from
+  the `MINPOW` **reset**: it is `full-scale/16` and `LOCK_CFG.MINPOW` is a 16-bit
+  field, so `ADC_WIDTH = 20` would need `2**16` and no fraction of full scale worth
+  having would fit (§2). The widths of the *connected* `apb_if` are checked separately
+  from these parameters — nothing forces an interface instance to agree with them.
 
 ---
 
@@ -82,7 +90,7 @@ module photonic_ring_tuner #(
 | `0x00` | `CTRL`     | RW     | `0`          | `[0] EN` — enable the loop. See §3.1.              |
 | `0x04` | `STEP`     | RW     | `0x0000_2004`| `[7:0] DITHER`, `[15:8] SWEEP` — step sizes in DAC LSBs. |
 | `0x08` | `SETTLE`   | RW     | `0x0000_0020`| `[15:0]` — clocks to wait after moving the DAC before sampling the ADC. |
-| `0x0C` | `LOCK_CFG` | RW     | `0x0100_0008`| `[15:0] THRESH`, `[31:16] MINPOW` — lock criteria in ADC LSBs. |
+| `0x0C` | `LOCK_CFG` | RW     | `{2**(ADC_WIDTH-4), 16'h0008}`<br>= `0x0100_0008` at the default `ADC_WIDTH = 12` | `[15:0] THRESH`, `[31:16] MINPOW` — lock criteria in ADC LSBs. `MINPOW` resets to **ADC full-scale/16**; `THRESH` resets to an **absolute** `8` LSBs. See *Why `MINPOW` scales* below. |
 | `0x10` | `STATUS`   | mixed  | `0`          | `[0] LOCKED` RO, `[1] RAIL_ERR` W1C, `[2] SWEEP_ERR` W1C, `[3] ACTIVE` RO. |
 | `0x14` | `DAC`      | RO     | `0`          | `[DAC_WIDTH-1:0]` — current centre code `dac_q`.   |
 | `0x18` | `PD`       | RO     | `0`          | `[ADC_WIDTH-1:0]` — most recent ADC sample `pd_q`, updated in **every** sample state (§3.3, §3.4). |
@@ -100,6 +108,32 @@ silicon and exercises per-field RAL access policies.
 both fields are clamped to a minimum of 1 in hardware:
 `dither_eff = (DITHER == 0) ? 1 : DITHER`, `sweep_eff = (SWEEP == 0) ? 1 : SWEEP`.
 The register still reads back the programmed `0`.
+
+**Why `MINPOW` scales with `ADC_WIDTH` and `THRESH` deliberately does not.**
+`MINPOW` is the minimum photodiode reading that qualifies a sweep peak (§3.3) and
+gates lock declaration (§3.4). It is physically **a fraction of the expected peak**,
+not an absolute LSB count: narrowing the ADC changes the *quantization*, not the
+*optics*. Its reset is therefore `full-scale/16 = 2**(ADC_WIDTH-4)`, which is exactly
+`256 = 0x100` at the default `ADC_WIDTH = 12` — the value this register always had,
+now written as what it always meant. A fixed `0x100` breaks in **both** directions:
+at `ADC_WIDTH = 8` full scale is `255`, so `MINPOW` sits *above* full scale and is
+unreachable — the loop can never lock at its reset defaults, and every sweep ends in
+`SWEEP_ERR`; at `ADC_WIDTH = 16` it is `0.39 %` of full scale, so the false-lock
+guard is nearly useless. **The second direction is the dangerous one**, because it
+fails *permissively*: a nearly dark ring passes the one check that exists to reject
+it (§3.4), and the failure is a confident wrong answer rather than a loud one.
+
+`THRESH` is the opposite case and stays absolute. It discriminates a *real* gradient
+from the *noise floor*, and quantization noise is ~0.5 LSB regardless of converter
+width — `8/4096` is not a fraction of anything in particular. Scaling it would make
+the dead-band track the wrong quantity.
+
+Clamps, so the formula is total for every legal parameterization: the reset is
+floored at `1` (`2**(ADC_WIDTH-4)` rounds to 0 below `ADC_WIDTH = 5`, and a `MINPOW`
+of 0 is not a false-lock guard at all) and never exceeds full scale. `MINPOW` is a
+16-bit field, so `ADC_WIDTH ≥ 20` could not express `full-scale/16` at all — that is
+**rejected at elaboration** (§1 parameter checks) rather than silently clamped, since
+a clamped `MINPOW` is precisely the permissive failure above.
 
 ---
 
@@ -200,6 +234,13 @@ is a live status, not sticky. It drives both `STATUS.LOCKED` and the `locked` po
 > transmission curve is flat, so `p_hi_q ≈ p_lo_q ≈ 0` and the gradient test alone
 > reports "at peak" on a completely dark ring. Requiring both probes to exceed
 > `MINPOW` rejects that. §7.4 defines the test that proves it.
+>
+> This is why `MINPOW`'s reset is a *fraction of full scale* (`2**(ADC_WIDTH-4)`,
+> §2) rather than a fixed LSB count: a `MINPOW` that does not track the converter
+> ends up a negligible fraction of full scale on a wider ADC, and then this
+> paragraph's guard silently stops guarding — the ring is dark, both probes are
+> "above `MINPOW`", and the block declares the exact false lock it exists to
+> refuse. That failure is *permissive*, so nothing reports it.
 
 ### 3.5 Sticky error flags
 

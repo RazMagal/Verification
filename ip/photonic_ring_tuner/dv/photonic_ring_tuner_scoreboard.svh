@@ -109,24 +109,36 @@ class photonic_ring_tuner_scoreboard extends uvm_scoreboard;
   virtual ring_if                                    ring_vif;
   photonic_ring_tuner_env_cfg                        m_cfg;
 
-  // register byte offsets (spec 2)
-  localparam bit [7:0] CTRL_OFF     = 8'h00;
-  localparam bit [7:0] STEP_OFF     = 8'h04;
-  localparam bit [7:0] SETTLE_OFF   = 8'h08;
-  localparam bit [7:0] LOCK_CFG_OFF = 8'h0C;
-  localparam bit [7:0] STATUS_OFF   = 8'h10;
-  localparam bit [7:0] DAC_OFF      = 8'h14;
-  localparam bit [7:0] PD_OFF       = 8'h18;
+  // Register byte offsets (spec 2). The OFFSETS are register-map facts; their
+  // WIDTH is the bus's, so it comes from the parameter file rather than from a
+  // second assumption that the address bus is 8 bits.
+  localparam bit [TUNER_ADDR_WIDTH-1:0] CTRL_OFF     = 'h00;
+  localparam bit [TUNER_ADDR_WIDTH-1:0] STEP_OFF     = 'h04;
+  localparam bit [TUNER_ADDR_WIDTH-1:0] SETTLE_OFF   = 'h08;
+  localparam bit [TUNER_ADDR_WIDTH-1:0] LOCK_CFG_OFF = 'h0C;
+  localparam bit [TUNER_ADDR_WIDTH-1:0] STATUS_OFF   = 'h10;
+  localparam bit [TUNER_ADDR_WIDTH-1:0] DAC_OFF      = 'h14;
+  localparam bit [TUNER_ADDR_WIDTH-1:0] PD_OFF       = 'h18;
 
-  // DUT geometry (matches the tb's parameterization).
-  localparam int unsigned DAC_MAX = 4095;
+  // DUT geometry: the SAME parameter the tb gives the DUT, not a copy of it.
+  localparam int unsigned DAC_MAX = TUNER_DAC_MAX;
 
   // ---- shadow of the PROGRAMMED register values (spec 2 reset values) ----
+  // These widths are the spec-2 REGISTER FIELD widths (STEP is two 8-bit step
+  // sizes, SETTLE/THRESH/MINPOW are 16-bit), not converter geometry, so they
+  // are literal on purpose and do not track DAC_WIDTH/ADC_WIDTH.
+  //
+  // The VALUES are a different question, and MINPOW is the one exception: it is
+  // a fraction of ADC full scale, so its reset scales with ADC_WIDTH and is read
+  // from photonic_ring_tuner_params.svh (0x0100 at the default 12 bits) rather
+  // than restated. It matters here specifically: check 4(d) below compares
+  // max_adc_seen against minpow_prog, so a shadow that did not scale would
+  // silently mis-judge the liveness evidence on any other build.
   bit [7:0]    dither_prog = 8'h04;
   bit [7:0]    sweep_prog  = 8'h20;
   bit [15:0]   settle_prog = 16'h0020;
-  bit [15:0]   thresh_prog = 16'h0008;
-  bit [15:0]   minpow_prog = 16'h0100;
+  bit [15:0]   thresh_prog = 16'(TUNER_THRESH_RST);
+  bit [15:0]   minpow_prog = 16'(TUNER_MINPOW_RST);
   bit          en_prog     = 1'b0;
 
   // ---- observed STATUS flags (only visible over the bus) ----
@@ -297,9 +309,11 @@ class photonic_ring_tuner_scoreboard extends uvm_scoreboard;
             if (t.rdata[3]) saw_status_active = 1'b1;
           end
           // pd_q is loaded from adc_code in EVERY sample state (spec 2), so a
-          // non-zero PD read is direct proof that the DUT digitised light.
-          PD_OFF: if (int'(t.rdata[11:0]) > max_pd_read)
-                    max_pd_read = int'(t.rdata[11:0]);
+          // non-zero PD read is direct proof that the DUT digitised light. The
+          // slice is the PD register's ADC-wide field (spec 2), so it follows
+          // TUNER_ADC_WIDTH rather than assuming [11:0].
+          PD_OFF: if (int'(t.rdata[TUNER_ADC_WIDTH-1:0]) > max_pd_read)
+                    max_pd_read = int'(t.rdata[TUNER_ADC_WIDTH-1:0]);
           default: /* DAC and the RW registers carry no liveness evidence */ ;
         endcase
       end

@@ -58,7 +58,7 @@ field-level contract in [the spec](docs/photonic_ring_tuner_spec.md#2-register-m
 | `0x00` | `CTRL` | RW | `0` | `[0] EN` — a **rising edge** starts a fresh acquisition |
 | `0x04` | `STEP` | RW | `0x0000_2004` | `[7:0] DITHER`, `[15:8] SWEEP` — step sizes in DAC LSBs (0 clamps to 1 in HW) |
 | `0x08` | `SETTLE` | RW | `0x0000_0020` | clocks to wait after moving the DAC before sampling the ADC |
-| `0x0C` | `LOCK_CFG` | RW | `0x0100_0008` | `[15:0] THRESH`, `[31:16] MINPOW` — lock criteria in ADC LSBs |
+| `0x0C` | `LOCK_CFG` | RW | `{2**(ADC_WIDTH-4), 16'h0008}`<br>= `0x0100_0008` at the default `ADC_WIDTH = 12` | `[15:0] THRESH`, `[31:16] MINPOW` — lock criteria in ADC LSBs. `MINPOW` resets to ADC **full-scale/16**, `THRESH` to an **absolute** 8 LSBs — see below |
 | `0x10` | `STATUS` | mixed | `0` | `[0] LOCKED` RO, `[1] RAIL_ERR` W1C, `[2] SWEEP_ERR` W1C, `[3] ACTIVE` RO |
 | `0x14` | `DAC` | RO | `0` | current centre code `dac_q` |
 | `0x18` | `PD` | RO | `0` | most recent ADC sample `pd_q` |
@@ -92,6 +92,18 @@ thing this block has to be proven not to do. Far off resonance the transmission
 curve is flat, so both dither probes read ≈ 0 and are equal — a lock rule based
 on the gradient alone confidently declares "at peak" on a completely dark ring.
 Requiring both probes to exceed `MINPOW` rejects that.
+
+Which is why `MINPOW`'s **reset scales with `ADC_WIDTH`** (`full-scale/16 =
+2**(ADC_WIDTH-4)`, exactly `0x100` at the default 12 bits) while `THRESH` stays
+absolute: `MINPOW` is a fraction of the expected peak — narrowing the ADC changes
+the quantization, not the optics — whereas `THRESH` separates a real gradient from
+a ~0.5-LSB quantization noise floor. A hardcoded `0x100` fails in both directions,
+and the one to fear is the **permissive** one: at `ADC_WIDTH = 16` it would be
+0.39 % of full scale, so a nearly dark ring passes the only check that exists to
+reject it and the block declares a confident false lock. (At `ADC_WIDTH = 8` it
+fails the *loud* way instead — `0x100` is above a full scale of `255`, so nothing
+can ever lock.) Full rationale in
+[spec §2](docs/photonic_ring_tuner_spec.md#2-register-map-byte-offsets-in-0x00--0xff).
 
 `locked` is a live status, not a sticky flag: it deasserts as soon as a single
 iteration is not at peak.

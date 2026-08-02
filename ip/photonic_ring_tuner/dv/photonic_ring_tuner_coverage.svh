@@ -54,10 +54,36 @@ class photonic_ring_tuner_coverage extends uvm_component;
 
   bit cov_enable = 1'b1;
 
-  localparam bit [7:0] CTRL_OFF     = 8'h00;
-  localparam bit [7:0] STEP_OFF     = 8'h04;
-  localparam bit [7:0] SETTLE_OFF   = 8'h08;
-  localparam bit [7:0] LOCK_CFG_OFF = 8'h0C;
+  // Offsets are spec-2 register-map facts; their WIDTH is the bus's, so it comes
+  // from photonic_ring_tuner_params.svh (which takes it from the VIP).
+  localparam bit [TUNER_ADDR_WIDTH-1:0] CTRL_OFF     = 'h00;
+  localparam bit [TUNER_ADDR_WIDTH-1:0] STEP_OFF     = 'h04;
+  localparam bit [TUNER_ADDR_WIDTH-1:0] SETTLE_OFF   = 'h08;
+  localparam bit [TUNER_ADDR_WIDTH-1:0] LOCK_CFG_OFF = 'h0C;
+
+  // Bin edges on the PHYSICAL axes are fractions of full scale written at the
+  // 12-bit scale and rescaled, exactly as ring_cfg's regime bounds are: on the
+  // default build DAC_FS == REF_FS == 4096, so `(k * DAC_FS) / REF_FS == k` and
+  // every edge below is numerically what it always was.
+  localparam int DAC_FS = TUNER_DAC_FS;
+  localparam int REF_FS = TUNER_REF_FS;
+
+  // cp_minpow's edges are the one REGISTER axis that is not a register-map fact:
+  // like cg_settle's and cp_thresh's, they are placed around the field's RESET
+  // value so that `nom` means "programmed at the default", and MINPOW's reset is
+  // ADC full-scale/16 (photonic_ring_tuner_params.svh) rather than a constant.
+  // Deriving them keeps `nom` meaning that on a re-parameterized build instead
+  // of quietly becoming an empty bin; at the default ADC_WIDTH = 12 they are
+  // 255 / 256 / 1023 / 1024, i.e. exactly the edges they have always been.
+  // Both clamps below only bite on builds the RTL refuses to elaborate anyway
+  // (ADC_WIDTH < 5 clamps the reset to 1; ADC_WIDTH >= 18 pushes 4x the reset
+  // past the 16-bit field), and they cost at most a one-value bin overlap there,
+  // which is legal and is the honest description of such a build.
+  localparam int MINPOW_NOM_LO = TUNER_MINPOW_RST;
+  localparam int MINPOW_NOM_HI = (4 * TUNER_MINPOW_RST - 1 > 65535)
+                                 ? 65535 : (4 * TUNER_MINPOW_RST - 1);
+  localparam int MINPOW_LOW_HI = (MINPOW_NOM_LO > 1) ? (MINPOW_NOM_LO - 1) : 1;
+  localparam int MINPOW_HIGH_LO = (MINPOW_NOM_HI >= 65535) ? 65535 : (MINPOW_NOM_HI + 1);
 
   // ---- register programming ------------------------------------------------
   covergroup cg_ctrl with function sample(bit en);
@@ -129,12 +155,14 @@ class photonic_ring_tuner_coverage extends uvm_component;
       bins nom  = {[8:63]};
       bins loose= {[64:65535]};
     }
-    // MINPOW == 0 disables the false-lock guard entirely (spec 3.4).
+    // MINPOW == 0 disables the false-lock guard entirely (spec 3.4). The other
+    // three edges are relative to the RESET MINPOW (= ADC full-scale/16); see
+    // the localparams above. 0 / 1..255 / 256..1023 / 1024.. at ADC_WIDTH = 12.
     cp_minpow : coverpoint minpow {
       bins zero = {0};
-      bins low  = {[1:255]};
-      bins nom  = {[256:1023]};
-      bins high = {[1024:65535]};
+      bins low  = {[1 : MINPOW_LOW_HI]};
+      bins nom  = {[MINPOW_NOM_LO : MINPOW_NOM_HI]};
+      bins high = {[MINPOW_HIGH_LO : 65535]};
     }
   endgroup
 
@@ -228,16 +256,17 @@ class photonic_ring_tuner_coverage extends uvm_component;
     return 3;
   endfunction
 
+  // low / mid / high thirds of the tuning range, plus "beyond the top code".
   function int res_bin(real res);
-    if (res > 4095.0) return 3;      // resonance outside the tuning range
-    if (res < 1365.0) return 0;
-    if (res < 2731.0) return 1;
+    if (res > real'(TUNER_DAC_MAX))            return 3;   // outside the range
+    if (res < real'((1365 * DAC_FS) / REF_FS)) return 0;
+    if (res < real'((2731 * DAC_FS) / REF_FS)) return 1;
     return 2;
   endfunction
 
   function int fwhm_bin(real fwhm);
-    if (fwhm <  256.0) return 0;
-    if (fwhm <  640.0) return 1;
+    if (fwhm < real'((256 * DAC_FS) / REF_FS)) return 0;
+    if (fwhm < real'((640 * DAC_FS) / REF_FS)) return 1;
     return 2;
   endfunction
 

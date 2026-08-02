@@ -44,9 +44,24 @@ typedef enum {
 // -----------------------------------------------------------------------------
 class ring_cfg extends uvm_object;
 
-  // DAC geometry (must match the tb's DUT parameterization). Signed `int` so it
-  // never drags a constraint expression into unsigned comparison.
-  int dac_max = 4095;
+  // ---- geometry : ONE source, photonic_ring_tuner_params.svh ---------------
+  // These are the SAME parameters the tb hands the DUT, aliased here only to
+  // keep the constraint lines readable. Signed `int` throughout so nothing
+  // below is dragged into an unsigned comparison.
+  //
+  // THE BOUNDS IN THE CONSTRAINTS ARE FRACTIONS OF FULL SCALE, written as the
+  // 12-bit codes they were chosen as and rescaled by FS/REF_FS: a 512-code
+  // linewidth on a 12-bit DAC is the same physical ring as a 128-code linewidth
+  // on a 10-bit one. On the default build DAC_FS == ADC_FS == REF_FS == 4096,
+  // so `(k * FS) / REF_FS == k` exactly for every k below -- the rescaling is
+  // the identity and the numbers a reader sees are the numbers the solver sees.
+  // What does NOT scale is marked where it appears: tau is in CLOCK CYCLES and
+  // the noise floor is in absolute ADC LSBs (it is judged against THRESH, a
+  // spec-2 register value).
+  localparam int DAC_MAX = TUNER_DAC_MAX;   // 4095
+  localparam int DAC_FS  = TUNER_DAC_FS;    // 4096 DAC codes, full scale
+  localparam int ADC_FS  = TUNER_ADC_FS;    // 4096 ADC LSBs, full scale
+  localparam int REF_FS  = TUNER_REF_FS;    // 4096: the scale k is written at
 
   // Regime selector (NOT rand: the test picks it, the constraints follow).
   ring_mode_e  mode = RING_MODE_LOCKABLE;
@@ -77,11 +92,28 @@ class ring_cfg extends uvm_object;
   `uvm_object_utils_end
 
   // ---- global sanity bounds ------------------------------------------------
+  // The res_code cap is a SOLVER cap, not a physical one: every regime below
+  // pins res_code_i inside a much tighter window (the widest is c_rail's
+  // DAC_MAX + fwhm/3), so this bound never binds -- it exists only so an
+  // unconstrained mode cannot wander.
   constraint c_common {
-    res_code_i  inside {[0:6000]};      // may sit outside the DAC range (rail)
-    fwhm_code_i inside {[96:1024]};
-    tau_x10     inside {[10:8000]};     // tau 1.0 .. 800.0 cycles, never < 1
-    p_peak_i    inside {[1024:3072]};   // >> MINPOW (0x100) and < ADC full scale
+    res_code_i  inside {[0 : (6000 * DAC_FS) / REF_FS]};   // may exceed the range
+    fwhm_code_i inside {[(96 * DAC_FS) / REF_FS : (1024 * DAC_FS) / REF_FS]};
+    tau_x10     inside {[10:8000]};     // CLOCK CYCLES x10: no width in this
+    // p_peak is a fraction of ADC full scale: FS/4 .. 3*FS/4. It must also stay
+    // well above the reset MINPOW -- and that one is a fraction of full scale
+    // too (FS/16, see TUNER_MINPOW_RST in photonic_ring_tuner_params.svh), so
+    // this bound is 4x..12x MINPOW on EVERY build rather than only on the 12-bit
+    // one. Before MINPOW scaled, an ADC_WIDTH of 8 put MINPOW (256) above full
+    // scale (255) and no p_peak in any range could have reached it.
+    p_peak_i    inside {[(1024 * ADC_FS) / REF_FS : (3072 * ADC_FS) / REF_FS]};
+    // ABSOLUTE ADC LSBs, judged vs THRESH -- which is absolute for the same
+    // reason (quantization noise is ~0.5 LSB at any width). NOTE the one place
+    // this absolute bound meets the now-scaling MINPOW: the DARK regime needs
+    // its noise strictly below MINPOW = FS/16, i.e. 8 < FS/16, i.e.
+    // ADC_WIDTH >= 8. That is not a new limit -- at ADC_WIDTH = 8 the rescaled
+    // DAC bounds below are already collapsing (fwhm's 96-code floor rescales to
+    // 6 codes), so this environment's regimes stop being physical there anyway.
     noise_i     inside {[0:8]};
   }
 
@@ -89,10 +121,10 @@ class ring_cfg extends uvm_object;
   constraint c_default {
     mode == RING_MODE_DEFAULT -> {
       laser_on    == 1'b1;
-      res_code_i  == 2048;
-      fwhm_code_i == 512;
+      res_code_i  == DAC_FS / 2;                  // mid-range: 2048
+      fwhm_code_i == DAC_FS / 8;                  //             512
       tau_x10     == 40;
-      p_peak_i    == 3000;
+      p_peak_i    == (3000 * ADC_FS) / REF_FS;    //            3000
       noise_i     == 0;
     }
   }
@@ -110,11 +142,12 @@ class ring_cfg extends uvm_object;
   constraint c_lockable {
     mode == RING_MODE_LOCKABLE -> {
       laser_on    == 1'b1;
-      res_code_i  inside {[384:3712]};   // reachable, clear of both rails
-      fwhm_code_i inside {[384:1024]};
+      // reachable, and clear of BOTH rails by 384 codes (3/32 of full scale)
+      res_code_i  inside {[(384 * DAC_FS) / REF_FS : (3712 * DAC_FS) / REF_FS]};
+      fwhm_code_i inside {[(384 * DAC_FS) / REF_FS : (1024 * DAC_FS) / REF_FS]};
       tau_x10     inside {[10:80]};      // tau 1..8 cycles << SETTLE = 32
-      p_peak_i    inside {[1024:3072]};
-      noise_i     inside {[0:2]};
+      p_peak_i    inside {[(1024 * ADC_FS) / REF_FS : (3072 * ADC_FS) / REF_FS]};
+      noise_i     inside {[0:2]};        // absolute LSBs, vs THRESH = 8
     }
   }
 
@@ -128,30 +161,36 @@ class ring_cfg extends uvm_object;
   //  from the resonance, the photodiode goes dark, the MINPOW guard (correctly)
   //  refuses to declare lock, and the DAC drives into the rail. Whatever the
   //  seed, `locked` must never rise. fwhm <= 192 keeps the residual power at the
-  //  loop's resting point well under MINPOW = 0x100.
+  //  loop's resting point well under MINPOW -- which is ADC full-scale/16, 0x100
+  //  at the default ADC_WIDTH = 12, and stays the SAME FRACTION of full scale on
+  //  a narrower converter, so that margin is a ratio and survives a
+  //  re-parameterization instead of inverting at 8 bits.
   constraint c_slow_thermal {
     mode == RING_MODE_SLOW_THERMAL -> {
       laser_on    == 1'b1;
-      res_code_i  inside {[128:640]};
-      fwhm_code_i inside {[96:192]};
+      res_code_i  inside {[(128 * DAC_FS) / REF_FS : (640 * DAC_FS) / REF_FS]};
+      fwhm_code_i inside {[(96 * DAC_FS) / REF_FS : (192 * DAC_FS) / REF_FS]};
       tau_x10     inside {[4000:8000]};  // tau 400..800 cycles >> SETTLE = 1
-      p_peak_i    inside {[2048:3072]};
+      p_peak_i    inside {[(2048 * ADC_FS) / REF_FS : (3072 * ADC_FS) / REF_FS]};
       noise_i     inside {[0:4]};
     }
   }
 
   // ---- DARK : unplugged fibre / laser off ----------------------------------
   //  trans is forced to 0, so the ADC reads read-noise only (<= 8 LSB, far below
-  //  MINPOW = 0x100). The sweep finds nothing above MINPOW anywhere in the
+  //  MINPOW = ADC full-scale/16 = 0x100 at ADC_WIDTH 12; the noise floor is
+  //  absolute and MINPOW is a fraction, so this margin is the one that narrows
+  //  with the converter -- it holds strictly for ADC_WIDTH >= 8, see the note on
+  //  noise_i in c_common). The sweep finds nothing above MINPOW anywhere in the
   //  tuning range -> SWEEP_ERR, and the flat "both probes equal" condition must
   //  NOT be mistaken for a peak (spec 3.4).
   constraint c_dark {
     mode == RING_MODE_DARK -> {
       laser_on    == 1'b0;
-      res_code_i  inside {[384:3712]};
-      fwhm_code_i inside {[384:1024]};
+      res_code_i  inside {[(384 * DAC_FS) / REF_FS : (3712 * DAC_FS) / REF_FS]};
+      fwhm_code_i inside {[(384 * DAC_FS) / REF_FS : (1024 * DAC_FS) / REF_FS]};
       tau_x10     inside {[10:80]};
-      p_peak_i    inside {[1024:3072]};
+      p_peak_i    inside {[(1024 * ADC_FS) / REF_FS : (3072 * ADC_FS) / REF_FS]};
       noise_i     inside {[0:8]};
     }
   }
@@ -171,21 +210,23 @@ class ring_cfg extends uvm_object;
   constraint c_rail {
     mode == RING_MODE_RAIL -> {
       laser_on    == 1'b1;
-      fwhm_code_i inside {[384:512]};
-      p_peak_i    inside {[2560:3072]};
+      fwhm_code_i inside {[(384 * DAC_FS) / REF_FS : (512 * DAC_FS) / REF_FS]};
+      p_peak_i    inside {[(2560 * ADC_FS) / REF_FS : (3072 * ADC_FS) / REF_FS]};
       tau_x10     inside {[10:80]};
       noise_i     inside {[0:2]};
-      res_code_i >= dac_max + (fwhm_code_i / 4);
-      res_code_i <= dac_max + (fwhm_code_i / 3);
+      res_code_i >= DAC_MAX + (fwhm_code_i / 4);
+      res_code_i <= DAC_MAX + (fwhm_code_i / 3);
     }
   }
 
+  // Same ring as c_default, for the pre-randomize state (and for a test that
+  // never randomizes at all): mid-range resonance, FS/8 linewidth, bright.
   function new(string name = "ring_cfg");
     super.new(name);
-    res_code_i  = 2048;
-    fwhm_code_i = 512;
+    res_code_i  = DAC_FS / 2;                  // 2048
+    fwhm_code_i = DAC_FS / 8;                  //  512
     tau_x10     = 40;
-    p_peak_i    = 3000;
+    p_peak_i    = (3000 * ADC_FS) / REF_FS;    // 3000
     noise_i     = 0;
     laser_on    = 1'b1;
     update_reals();
@@ -280,6 +321,13 @@ class photonic_ring_tuner_env_cfg extends uvm_object;
   // Multiplied by deadline_margin_x so it stays a real deadline without being
   // seed-flaky. ONE definition, used by the scoreboard (which enforces it) and
   // by the vseqs (which size their observation windows with it).
+  //
+  // The sweep length is the DAC's, and LOCK_N is the DUT's, so both come from
+  // photonic_ring_tuner_params.svh: a wider heater DAC or a longer lock filter
+  // lengthens the deadline instead of quietly failing every acquisition against
+  // a 12-bit-sized one. (pts is unchanged arithmetic: floor((DAC_MAX + sw)/sw)
+  // == ceil((DAC_MAX + 1)/sw) for every sw >= 1.) The clocks-per-point and
+  // clocks-per-iteration terms are FSM structure from spec 3.2, not widths.
   function int unsigned acq_deadline(int unsigned settle_q,
                                      int unsigned sweep_eff,
                                      int unsigned dither_eff);
@@ -289,9 +337,9 @@ class photonic_ring_tuner_env_cfg extends uvm_object;
     int unsigned cpi;
     int unsigned sw  = (sweep_eff  == 0) ? 1 : sweep_eff;
     int unsigned dit = (dither_eff == 0) ? 1 : dither_eff;
-    pts   = (4095 + sw) / sw;
+    pts   = (TUNER_DAC_MAX + sw) / sw;
     cpp   = settle_q + 3;
-    iters = (sw / dit) + 4 + 32;          // 4 == LOCK_N
+    iters = (sw / dit) + TUNER_LOCK_N + 32;
     cpi   = 2 * (settle_q + 2) + 3;
     return deadline_margin_x * (pts * cpp + iters * cpi) + 500;
   endfunction

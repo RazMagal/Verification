@@ -2,7 +2,7 @@
 // photonic_ring_tuner_tb_top.sv : top module for the photonic_ring_tuner UVM env.
 //
 //   - generates a 10ns clock and an async-assert / sync-deassert active-low reset
-//   - instantiates the shared apb_if (ADDR=8, DATA=32) and the optical ring_if
+//   - instantiates the shared apb_if and the optical ring_if
 //   - instantiates the DUT and CLOSES THE LOOP through ring_model:
 //         dut.dac_code -> ring_if -> ring_model -> ring_if.adc_code -> dut
 //     There is no stimulus generator on the optical side; the ring's physical
@@ -11,6 +11,13 @@
 //   - BINDS the reusable APB protocol checker onto apb_if and the tuner SVA onto
 //     the DUT, mapping to the spec-4 internal signal names
 //   - sets the vifs into config_db under keys "apb_vif" / "ring_vif" and run_test()
+//
+//   THIS FILE STATES NO WIDTHS. The DUT, both interfaces, the optical model and
+//   both binds are parameterized from photonic_ring_tuner_pkg's parameters
+//   (dv/photonic_ring_tuner_params.svh), which is also what the RAL, the
+//   scoreboard and ring_cfg derive from -- so the mirror and the hardware
+//   cannot be reparameterized apart. Override at compile time, e.g.
+//   +define+TUNER_DAC_W=10.
 //
 //   Compile note: apb_if.sv + ring_if.sv compile at $unit BEFORE the packages;
 //   apb_vip_pkg then photonic_ring_tuner_pkg; then ring_model, RTL, SVA, this tb
@@ -25,20 +32,16 @@ module photonic_ring_tuner_tb_top;
   import apb_vip_pkg::*;
   import photonic_ring_tuner_pkg::*;
 
-  // CamelCase localparams: Verible's constant naming rule reserves ALL_CAPS with
-  // underscores for module PARAMETERS (which these feed by name below).
-  localparam int AddrWidth = 8;
-  localparam int DataWidth = 32;
-  localparam int DacWidth  = 12;
-  localparam int AdcWidth  = 12;
-  localparam int LockN     = 4;
-
   // ---- clock / reset ----
+  // CamelCase localparams: Verible's constant naming rule reserves ALL_CAPS with
+  // underscores for module PARAMETERS. These are TIMES, not widths.
+  localparam int ClkPeriodNs = 10;             // 100 MHz
+
   logic clk;
   logic rst_n;
 
   initial clk = 1'b0;
-  always #5 clk = ~clk;                       // 100 MHz
+  always #(ClkPeriodNs / 2) clk = ~clk;
 
   initial begin
     rst_n = 1'b0;                             // async assert at t=0
@@ -47,8 +50,10 @@ module photonic_ring_tuner_tb_top;
   end
 
   // ---- interfaces ----
-  apb_if #(.ADDR_WIDTH(AddrWidth), .DATA_WIDTH(DataWidth)) u_apb_if ();
-  ring_if #(.DAC_WIDTH(DacWidth), .ADC_WIDTH(AdcWidth))    u_ring_if (
+  apb_if #(.ADDR_WIDTH(TUNER_ADDR_WIDTH),
+           .DATA_WIDTH(TUNER_DATA_WIDTH)) u_apb_if ();
+  ring_if #(.DAC_WIDTH(TUNER_DAC_WIDTH),
+            .ADC_WIDTH(TUNER_ADC_WIDTH))  u_ring_if (
     .clk(clk), .rst_n(rst_n));
 
   assign u_apb_if.clk   = clk;
@@ -56,11 +61,11 @@ module photonic_ring_tuner_tb_top;
 
   // ---- DUT ----
   photonic_ring_tuner #(
-    .ADDR_WIDTH(AddrWidth),
-    .DATA_WIDTH(DataWidth),
-    .DAC_WIDTH (DacWidth),
-    .ADC_WIDTH (AdcWidth),
-    .LOCK_N    (LockN)
+    .ADDR_WIDTH(TUNER_ADDR_WIDTH),
+    .DATA_WIDTH(TUNER_DATA_WIDTH),
+    .DAC_WIDTH (TUNER_DAC_WIDTH),
+    .ADC_WIDTH (TUNER_ADC_WIDTH),
+    .LOCK_N    (TUNER_LOCK_N)
   ) dut (
     .apb      (u_apb_if.slave),
     .adc_code (u_ring_if.adc_code),
@@ -70,15 +75,15 @@ module photonic_ring_tuner_tb_top;
 
   // ---- the optical model : this instance is what CLOSES the control loop ----
   ring_model #(
-    .DAC_WIDTH(DacWidth),
-    .ADC_WIDTH(AdcWidth)
+    .DAC_WIDTH(TUNER_DAC_WIDTH),
+    .ADC_WIDTH(TUNER_ADC_WIDTH)
   ) u_ring_model (
     .ring (u_ring_if.model_mp)
   );
 
   // ---- bind: reusable APB3 protocol checker onto every apb_if instance ----
   bind apb_if apb_protocol_checker #(
-    .ADDR_WIDTH(AddrWidth), .DATA_WIDTH(DataWidth)
+    .ADDR_WIDTH(TUNER_ADDR_WIDTH), .DATA_WIDTH(TUNER_DATA_WIDTH)
   ) u_apb_chk (
     .clk(clk), .rst_n(rst_n), .psel(psel), .penable(penable),
     .pwrite(pwrite), .pready(pready), .pslverr(pslverr),
@@ -87,8 +92,9 @@ module photonic_ring_tuner_tb_top;
 
   // ---- bind: tuner-specific SVA onto the DUT (spec-4 internal names) ----
   bind photonic_ring_tuner photonic_ring_tuner_sva #(
-    .ADDR_WIDTH(AddrWidth), .DATA_WIDTH(DataWidth), .DAC_WIDTH(DacWidth),
-    .ADC_WIDTH(AdcWidth), .LOCK_N(LockN)
+    .ADDR_WIDTH(TUNER_ADDR_WIDTH), .DATA_WIDTH(TUNER_DATA_WIDTH),
+    .DAC_WIDTH(TUNER_DAC_WIDTH), .ADC_WIDTH(TUNER_ADC_WIDTH),
+    .LOCK_N(TUNER_LOCK_N)
   ) u_tuner_sva (
     .clk(apb.clk), .rst_n(apb.rst_n),
     .state_q(state_q),
@@ -111,13 +117,33 @@ module photonic_ring_tuner_tb_top;
   end
 
   // ---- safety watchdog ----
-  // Sized for the worst legal acquisition this env can ask for: a full
-  // 4096-point coarse sweep (SWEEP = 1) at the default SETTLE of 32 is about
-  // 1.4 ms at 100 MHz. 5 ms leaves room for that plus a fine lock and the drain,
-  // and still fails fast instead of hanging a regression.
+  // An ABSOLUTE wall-clock bound (500_000 clocks = 5 ms at 100 MHz), kept a
+  // constant on purpose: it must also catch a hang that no formula predicts, so
+  // deriving it from the sweep length would make it grow with exactly the thing
+  // it is supposed to bound.
+  //
+  // What IS derived is the ASSUMPTION behind that number -- that it comfortably
+  // exceeds the worst legal acquisition this env can ask for, a full
+  // (DAC_MAX+1)-point coarse sweep (SWEEP = 1) at the reset SETTLE of 32, i.e.
+  // 4096 * 35 = 143_360 clocks ~ 1.4 ms at 12 bits -- and it is CHECKED at
+  // elaboration below. Reparameterizing to a wider heater DAC therefore fails
+  // loudly here instead of turning every run in the regression into a mystery
+  // TB_WATCHDOG two hours later.
+  localparam int WatchdogCycles = 500_000;
+  localparam int SettleRstClks  = 32;      // spec 2: SETTLE resets to 0x0020
+  localparam int WorstSweepClks = (TUNER_DAC_MAX + 1) * (SettleRstClks + 3);
+
+  if (WatchdogCycles < 2 * WorstSweepClks)
+    $fatal(1, {"photonic_ring_tuner_tb_top: the %0d-clock watchdog is shorter ",
+               "than 2x the worst legal coarse sweep (%0d clocks at DAC_WIDTH ",
+               "= %0d); raise WatchdogCycles or the regression will time out ",
+               "instead of failing on a real property."},
+           WatchdogCycles, WorstSweepClks, TUNER_DAC_WIDTH);
+
   initial begin
-    #5ms;
-    `uvm_fatal("TB_WATCHDOG", "global timeout reached (5ms) - simulation hung")
+    #(WatchdogCycles * ClkPeriodNs * 1ns);
+    `uvm_fatal("TB_WATCHDOG", $sformatf(
+      "global timeout reached (%0d clocks) - simulation hung", WatchdogCycles))
   end
 
 endmodule

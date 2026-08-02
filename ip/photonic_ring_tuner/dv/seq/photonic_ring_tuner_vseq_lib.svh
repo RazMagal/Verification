@@ -34,16 +34,32 @@ class photonic_ring_tuner_base_vseq extends uvm_sequence #(apb_seq_item);
   virtual ring_if               ring_vif;   // set by the test (optical loop)
   photonic_ring_tuner_env_cfg   m_cfg;      // set by the test
 
-  // register byte offsets (spec 2), for the raw/illegal accesses
-  localparam bit [7:0] CTRL_OFF     = 8'h00;
-  localparam bit [7:0] STEP_OFF     = 8'h04;
-  localparam bit [7:0] SETTLE_OFF   = 8'h08;
-  localparam bit [7:0] LOCK_CFG_OFF = 8'h0C;
-  localparam bit [7:0] STATUS_OFF   = 8'h10;
-  localparam bit [7:0] DAC_OFF      = 8'h14;
-  localparam bit [7:0] PD_OFF       = 8'h18;
+  // Register byte offsets (spec 2), for the raw/illegal accesses. The offsets
+  // are register-map facts; their WIDTH is the bus's and comes from
+  // photonic_ring_tuner_params.svh.
+  localparam bit [TUNER_ADDR_WIDTH-1:0] CTRL_OFF     = 'h00;
+  localparam bit [TUNER_ADDR_WIDTH-1:0] STEP_OFF     = 'h04;
+  localparam bit [TUNER_ADDR_WIDTH-1:0] SETTLE_OFF   = 'h08;
+  localparam bit [TUNER_ADDR_WIDTH-1:0] LOCK_CFG_OFF = 'h0C;
+  localparam bit [TUNER_ADDR_WIDTH-1:0] STATUS_OFF   = 'h10;
+  localparam bit [TUNER_ADDR_WIDTH-1:0] DAC_OFF      = 'h14;
+  localparam bit [TUNER_ADDR_WIDTH-1:0] PD_OFF       = 'h18;
 
-  localparam int unsigned DAC_MAX = 4095;
+  // Converter geometry: the SAME parameters the tb gives the DUT.
+  localparam int unsigned DAC_MAX  = TUNER_DAC_MAX;
+  localparam int unsigned ADC_MAX  = TUNER_ADC_MAX;
+  // All-ones over the whole bus word: the default compare mask, and the payload
+  // of the "write every bit" attacks below (0xFFFF_FFFF at DATA_WIDTH = 32).
+  localparam bit [TUNER_DATA_WIDTH-1:0] DATA_ONES = '1;
+
+  // The spec-2 LOCK_CFG reset word, DERIVED rather than spelled: MINPOW is a
+  // fraction of ADC full scale (full-scale/16) and therefore tracks ADC_WIDTH,
+  // while THRESH is an absolute LSB count and does not -- the reasoning is in
+  // photonic_ring_tuner_params.svh, next to the definition. This is
+  // 0x0100_0008 at the default ADC_WIDTH = 12, the number in the spec table.
+  localparam bit [TUNER_DATA_WIDTH-1:0] LOCK_CFG_RST = TUNER_LOCK_CFG_RST;
+  localparam bit                 [15:0] MINPOW_RST   = 16'(TUNER_MINPOW_RST);
+  localparam bit                 [15:0] THRESH_RST   = 16'(TUNER_THRESH_RST);
 
   // Shadow of what THIS sequence programmed, so the observation windows can be
   // sized from the same deadline formula the scoreboard enforces.
@@ -92,7 +108,7 @@ class photonic_ring_tuner_base_vseq extends uvm_sequence #(apb_seq_item);
   endtask
 
   // Read a register and self-check its value against exp (mask applied).
-  task check_reg(uvm_reg r, uvm_reg_data_t exp, uvm_reg_data_t mask = 32'hFFFF_FFFF);
+  task check_reg(uvm_reg r, uvm_reg_data_t exp, uvm_reg_data_t mask = DATA_ONES);
     uvm_reg_data_t got;
     read_reg(r, got);
     if ((got & mask) !== (exp & mask))
@@ -104,7 +120,8 @@ class photonic_ring_tuner_base_vseq extends uvm_sequence #(apb_seq_item);
   endtask
 
   // Raw APB access (bypasses RAL; used for illegal / RO / reserved stimulus).
-  task raw_access(apb_dir_e dir, bit [7:0] addr, bit [31:0] wdata,
+  task raw_access(apb_dir_e dir, bit [TUNER_ADDR_WIDTH-1:0] addr,
+                  bit [TUNER_DATA_WIDTH-1:0] wdata,
                   output apb_seq_item done);
     apb_seq_item tr = apb_seq_item::type_id::create("raw");
     start_item(tr);
@@ -167,8 +184,11 @@ class photonic_ring_tuner_base_vseq extends uvm_sequence #(apb_seq_item);
   task probe_dac_pd();
     uvm_reg_data_t d;
     int unsigned   v;
+    // The two slices are the spec-2 fields of each register, so DAC follows the
+    // DAC width and PD the ADC width -- they are independent parameters even
+    // though both default to 12, which a shared 0x0000_0FFF mask hid.
     read_reg(regmodel.DAC, d);
-    v = int'(d & 32'h0000_0FFF);
+    v = int'(d[TUNER_DAC_WIDTH-1:0]);
     if (!probe_valid) begin
       dac_lo_probe = v;
       dac_hi_probe = v;
@@ -179,7 +199,7 @@ class photonic_ring_tuner_base_vseq extends uvm_sequence #(apb_seq_item);
       if (v > dac_hi_probe) dac_hi_probe = v;
     end
     read_reg(regmodel.PD, d);
-    v = int'(d & 32'h0000_0FFF);
+    v = int'(d[TUNER_ADC_WIDTH-1:0]);
     if (v > max_pd_probe) max_pd_probe = v;
   endtask
 
@@ -307,7 +327,7 @@ class photonic_ring_tuner_smoke_vseq extends photonic_ring_tuner_base_vseq;
     check_reg(regmodel.CTRL,     32'h0000_0000);
     check_reg(regmodel.STEP,     32'h0000_2004);
     check_reg(regmodel.SETTLE,   32'h0000_0020);
-    check_reg(regmodel.LOCK_CFG, 32'h0100_0008);
+    check_reg(regmodel.LOCK_CFG, LOCK_CFG_RST);
     check_reg(regmodel.STATUS,   32'h0000_0000);
     check_reg(regmodel.DAC,      32'h0000_0000);
     check_reg(regmodel.PD,       32'h0000_0000);
@@ -323,6 +343,11 @@ class photonic_ring_tuner_smoke_vseq extends photonic_ring_tuner_base_vseq;
     check_reg(regmodel.STEP, 32'h0000_0810);
     program_settle(16'h0040);
     check_reg(regmodel.SETTLE, 32'h0000_0040);
+    // Deliberately LITERAL, unlike the reset values restored below: these are an
+    // arbitrary distinctive pattern proving the two packed halves are written
+    // independently. Nothing optical reads them (the loop is never enabled in
+    // smoke), so they are register-map values, not ADC fractions, and a MINPOW
+    // above ADC full scale is a perfectly legal thing for software to write.
     program_lock_cfg(16'h0020, 16'h0200);
     check_reg(regmodel.LOCK_CFG, 32'h0200_0020);
 
@@ -334,22 +359,25 @@ class photonic_ring_tuner_smoke_vseq extends photonic_ring_tuner_base_vseq;
     check_reg(regmodel.SETTLE, 32'h0000_0040);
 
     // ---- RO registers : writes are SILENTLY dropped (no pslverr, no effect) ----
-    raw_access(APB_WRITE, DAC_OFF, 32'h0000_0FFF, it);
+    // The write data is all-ones ACROSS THE FIELD, so it stays a full-field
+    // attack whatever DAC_WIDTH / ADC_WIDTH are (0x0000_0FFF at 12 bits).
+    raw_access(APB_WRITE, DAC_OFF, TUNER_DATA_WIDTH'(DAC_MAX), it);
     if (it.slverr) `uvm_error("VSEQ_SMOKE", "write to RO DAC raised pslverr (should not)")
     check_reg(regmodel.DAC, 32'h0000_0000);
-    raw_access(APB_WRITE, PD_OFF, 32'h0000_0FFF, it);
+    raw_access(APB_WRITE, PD_OFF, TUNER_DATA_WIDTH'(ADC_MAX), it);
     if (it.slverr) `uvm_error("VSEQ_SMOKE", "write to RO PD raised pslverr (should not)")
     check_reg(regmodel.PD, 32'h0000_0000);
 
     // ---- STATUS : W1C with nothing set leaves it at 0, RO bits unaffected ----
-    raw_access(APB_WRITE, STATUS_OFF, 32'hFFFF_FFFF, it);
+    // Every bit of the word written, reserved bits included.
+    raw_access(APB_WRITE, STATUS_OFF, DATA_ONES, it);
     if (it.slverr) `uvm_error("VSEQ_SMOKE", "W1C write to STATUS raised pslverr")
     check_reg(regmodel.STATUS, 32'h0000_0000);
 
     // ---- restore the spec-2 defaults ----
     program_step(8'h04, 8'h20);
     program_settle(16'h0020);
-    program_lock_cfg(16'h0008, 16'h0100);
+    program_lock_cfg(THRESH_RST, MINPOW_RST);
     wait_cycles(4);
   endtask
 endclass
@@ -402,7 +430,7 @@ class photonic_ring_tuner_reg_vseq extends photonic_ring_tuner_base_vseq;
     disable_loop();
     program_step(8'h04, 8'h20);
     program_settle(16'h0020);
-    program_lock_cfg(16'h0008, 16'h0100);
+    program_lock_cfg(THRESH_RST, MINPOW_RST);
     check_reg(regmodel.STATUS, 32'h0000_0000);
     check_reg(regmodel.DAC,    32'h0000_0000);
     wait_cycles(4);
@@ -430,7 +458,7 @@ class photonic_ring_tuner_lock_vseq extends photonic_ring_tuner_base_vseq;
     // constrained so exactly these settings can acquire it (see env_cfg).
     check_reg(regmodel.STEP,     32'h0000_2004);
     check_reg(regmodel.SETTLE,   32'h0000_0020);
-    check_reg(regmodel.LOCK_CFG, 32'h0100_0008);
+    check_reg(regmodel.LOCK_CFG, LOCK_CFG_RST);
 
     `uvm_info("VSEQ_LOCK", $sformatf("acquiring %s (deadline %0d cycles)",
               m_cfg.m_ring_cfg.convert2string(), deadline_cycles()), UVM_LOW)
@@ -537,7 +565,7 @@ class photonic_ring_tuner_lock_loss_vseq extends photonic_ring_tuner_base_vseq;
     // lock_vseq: this test is about what happens AFTER the lock.
     check_reg(regmodel.STEP,     32'h0000_2004);
     check_reg(regmodel.SETTLE,   32'h0000_0020);
-    check_reg(regmodel.LOCK_CFG, 32'h0100_0008);
+    check_reg(regmodel.LOCK_CFG, LOCK_CFG_RST);
 
     `uvm_info("VSEQ_LOSS", $sformatf("acquiring %s (deadline %0d cycles)",
               m_cfg.m_ring_cfg.convert2string(), deadline_cycles()), UVM_LOW)
@@ -841,8 +869,11 @@ class photonic_ring_tuner_rail_w1c_race_vseq extends photonic_ring_tuner_base_vs
 
     regmodel.reset();
     program_settle(4);                 // short fine iteration (see header)
-    program_lock_cfg(16'h0000, 16'h0100);   // THRESH = 0, MINPOW at its default
-    check_reg(regmodel.LOCK_CFG, 32'h0100_0000);
+    // THRESH = 0 (so move_up is always true, see the header); MINPOW stays at
+    // its reset, which is ADC full-scale/16 -- this vseq needs the real
+    // false-lock guard in force, so it must track ADC_WIDTH like the DUT's does.
+    program_lock_cfg(16'h0000, MINPOW_RST);
+    check_reg(regmodel.LOCK_CFG, {MINPOW_RST, 16'h0000});
 
     `uvm_info("VSEQ_W1C_RACE", $sformatf(
       "railing the loop then hammering %0d W1C writes at STATUS.RAIL_ERR (%s)",
@@ -915,8 +946,8 @@ class photonic_ring_tuner_error_vseq extends photonic_ring_tuner_base_vseq;
     raw_access(APB_WRITE, 8'hFC, 32'hDEAD_BEEF, it);
     if (!it.slverr)
       `uvm_error("VSEQ_ERR", "unmapped write did not raise pslverr")
-    // legal write to RO DAC : NO pslverr, no effect
-    raw_access(APB_WRITE, DAC_OFF, 32'h0000_0FFF, it);
+    // legal write to RO DAC : NO pslverr, no effect (all-ones across the field)
+    raw_access(APB_WRITE, DAC_OFF, TUNER_DATA_WIDTH'(DAC_MAX), it);
     if (it.slverr)
       `uvm_error("VSEQ_ERR", "RO DAC write raised pslverr (should not)")
     raw_access(APB_READ, DAC_OFF, 32'h0, it);

@@ -11,6 +11,14 @@ package photonic_ring_tuner_pkg;
 
   import apb_vip_pkg::*;
 
+  // COMPILE-TIME GEOMETRY FIRST: every width in this package (RAL field widths
+  // and their reserved padding, DAC_MAX, the ring_cfg bounds, the deadline, the
+  // coverage bin edges) is derived from these parameters, so they must be
+  // elaborated before anything below. It is included after the apb_vip_pkg
+  // import because TUNER_ADDR_WIDTH is taken from APB_ADDR_WIDTH rather than
+  // stated a second time.
+  `include "photonic_ring_tuner_params.svh"
+
   // RAL + config (env_cfg defines ring_cfg and the mode/outcome enums)
   `include "photonic_ring_tuner_reg_block.svh"
   `include "photonic_ring_tuner_env_cfg.svh"

@@ -31,11 +31,17 @@
 //   against dac_code/locked).
 //
 //   Like gpio_if, a `virtual ring_if` handle is UNPARAMETERIZED and takes these
-//   defaults, so every ring_if instance in one build must share these widths
-//   (the standalone build uses the defaults, 12/12).
+//   defaults, so every ring_if instance in one build must share these widths --
+//   and the defaults are NOT written here. They come from `TUNER_DAC_W /
+//   `TUNER_ADC_W, the same macros photonic_ring_tuner_params.svh elaborates the
+//   package parameters from. This file compiles at $unit, before any package,
+//   so it has to take the widths as macros; that macro-only include is exactly
+//   why the two can never disagree.
 // -----------------------------------------------------------------------------
-interface ring_if #(parameter int DAC_WIDTH = 12,
-                    parameter int ADC_WIDTH = 12)
+`include "photonic_ring_tuner_widths.svh"
+
+interface ring_if #(parameter int DAC_WIDTH = `TUNER_DAC_W,
+                    parameter int ADC_WIDTH = `TUNER_ADC_W)
                    (input logic clk, input logic rst_n);
 
   // ---- 1) DUT-facing -------------------------------------------------------
@@ -46,12 +52,20 @@ interface ring_if #(parameter int DAC_WIDTH = 12,
   // ---- 2) Physical configuration (spec 7.4) --------------------------------
   // Initialised to a benign, lockable ring so a testbench that forgets to apply
   // a ring_cfg still simulates something sane instead of dividing by zero.
-  real res_code   = 2048.0;  // thermal state (DAC codes) that aligns the ring
-  real fwhm_code  =  512.0;  // resonance linewidth, DAC codes
-  real tau_cycles =    4.0;  // thermal time constant, CLOCK CYCLES (see 7.3)
-  real p_peak_lsb = 3000.0;  // ADC reading at perfect alignment
-  real noise_lsb  =    0.0;  // uniform ADC noise amplitude, LSBs
-  bit  laser_on   =   1'b1;  // 0 => trans forced to 0 (dark fibre)
+  // These are FRACTIONS OF FULL SCALE, so they follow the parameters above
+  // rather than assuming a 12-bit build: at 12 bits DacFs == AdcFs == RefFs ==
+  // 4096 and the values are exactly the 2048 / 512 / 3000 they always were.
+  localparam int DacFs = 1 << DAC_WIDTH;          // full scale, DAC codes
+  localparam int AdcFs = 1 << ADC_WIDTH;          // full scale, ADC LSBs
+  localparam int RefFs = `TUNER_REF_FS_CODES;     // the 12-bit scale k is at
+
+  real res_code   = real'(DacFs / 2);              // aligns the ring: mid-range
+  real fwhm_code  = real'(DacFs / 8);              // resonance linewidth, codes
+  real tau_cycles = 4.0;      // thermal time constant, CLOCK CYCLES (see 7.3):
+                              // a time, not a code, so it takes no width
+  real p_peak_lsb = real'((3000 * AdcFs) / RefFs); // ADC reading when aligned
+  real noise_lsb  = 0.0;      // uniform ADC noise amplitude, absolute LSBs
+  bit  laser_on   = 1'b1;     // 0 => trans forced to 0 (dark fibre)
 
   // ---- 3) Observables (spec 7.4, driven by ring_model) ---------------------
   real detune_code = 0.0;    // live d = temp - res_code, DAC codes

@@ -92,6 +92,17 @@ module photonic_ring_tuner #(
   //   - ADDR_WIDTH must span the largest mapped offset (PD_OFF = 'h18).
   //   - DATA_WIDTH is fixed at 32 by the spec §2 field layout: LOCK_CFG.MINPOW
   //     lives in [31:16] and STEP.SWEEP in [15:8].
+  //   - ADC_WIDTH is additionally capped at 19 by the MINPOW RESET VALUE, which
+  //     is a FRACTION OF FULL SCALE (full-scale/16 = 2**(ADC_WIDTH-4), see
+  //     MINPOW_RST below) while LOCK_CFG.MINPOW is a 16-bit field: at
+  //     ADC_WIDTH = 20 that reset needs 2**16 and no longer fits, and neither
+  //     does any other meaningful fraction of full scale, so the register map
+  //     itself is unfit for such a converter. That is REJECTED here rather than
+  //     silently clamped, because a clamped MINPOW is a false-lock guard that
+  //     has quietly stopped being one -- the PERMISSIVE failure direction, the
+  //     dangerous one (spec §2 note, §3.4). MINPOW_RST clamps as well, so the
+  //     expression is total for every width even where nothing can $fatal (the
+  //     DV's RAL elaborates the same formula from the same ADC_WIDTH).
   //
   // The two BUS-width checks are deliberately SEPARATE from the DATA_WIDTH /
   // ADDR_WIDTH parameter checks: this module's parameters and the widths of the
@@ -111,6 +122,11 @@ module photonic_ring_tuner #(
   if (ADC_WIDTH < 1 || ADC_WIDTH > DATA_WIDTH)
     $fatal(1, "photonic_ring_tuner: ADC_WIDTH must be 1..DATA_WIDTH (got %0d)",
            ADC_WIDTH);
+
+  if (ADC_WIDTH > 19)
+    $fatal(1, {"photonic_ring_tuner: ADC_WIDTH must be <= 19: the MINPOW reset is ",
+               "full-scale/16 = 2**(ADC_WIDTH-4) and LOCK_CFG.MINPOW is 16 bits ",
+               "(spec 2), so 20 bits would need 2**16 (got %0d)"}, ADC_WIDTH);
 
   if (ADDR_WIDTH < 5)
     $fatal(1, "photonic_ring_tuner: ADDR_WIDTH must be >= 5 to map 0x00..0x18 (got %0d)",
@@ -141,8 +157,26 @@ module photonic_ring_tuner #(
   localparam logic  [7:0] DITHER_RST = 8'h04;    // STEP[7:0]      of 0x0000_2004
   localparam logic  [7:0] SWEEP_RST  = 8'h20;    // STEP[15:8]     of 0x0000_2004
   localparam logic [15:0] SETTLE_RST = 16'h0020; // SETTLE[15:0]
-  localparam logic [15:0] THRESH_RST = 16'h0008; // LOCK_CFG[15:0]  of 0x0100_0008
-  localparam logic [15:0] MINPOW_RST = 16'h0100; // LOCK_CFG[31:16] of 0x0100_0008
+
+  // THRESH deliberately does NOT scale with ADC_WIDTH: it separates a real
+  // optical gradient from the QUANTIZATION NOISE FLOOR, which is ~0.5 LSB at
+  // any converter width, so it is an absolute LSB count (spec §2, §3.4).
+  localparam logic [15:0] THRESH_RST = 16'h0008; // LOCK_CFG[15:0], absolute
+
+  // MINPOW DOES scale: it is a FRACTION OF THE EXPECTED PEAK (spec §2, §3.3,
+  // §3.4), so the reset is full-scale/16 = 2**(ADC_WIDTH-4) -- exactly 0x0100
+  // at the default ADC_WIDTH = 12, which is what the 0x0100 in "reset
+  // 0x0100_0008" always meant. Clamped at both ends so the expression is total:
+  //   * floored at 1 -- 2**(ADC_WIDTH-4) rounds to 0 below ADC_WIDTH = 5, and a
+  //     MINPOW of 0 is no false-lock guard at all (a dark ring qualifies);
+  //   * capped at the 16-bit field -- unreachable in an elaborable build, since
+  //     ADC_WIDTH > 19 $fatals above; the cap is what makes the localparam
+  //     well-defined rather than a second opinion about legality.
+  // Both clamps stay <= 2**ADC_WIDTH - 1, so the reset MINPOW is never above
+  // full scale, i.e. never unreachable for the sweep (spec §3.3 SWEEP_ERR).
+  localparam logic [15:0] MINPOW_RST = (ADC_WIDTH <  5) ? 16'h0001
+                                     : (ADC_WIDTH > 19) ? 16'hFFFF
+                                     : 16'(1 << (ADC_WIDTH - 4));
 
   // ---- FSM state encoding (spec §3.2, fixed for the bound SVA) -------------
   localparam logic [2:0] S_IDLE       = 3'd0;  // wait for EN
