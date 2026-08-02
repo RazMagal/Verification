@@ -13,6 +13,8 @@ unchanged.
 ip/apb_gpio/
   rtl/apb_gpio.sv               DUT (owned by the RTL agent; do not modify here)
   rtl/apb_gpio_sva.sv           gpio SVA (bound onto the DUT)
+  dv/apb_gpio_widths.svh        guarded width MACROS ($unit-safe; gpio_if.sv uses them)
+  dv/apb_gpio_params.svh        those macros as package parameters (included FIRST)
   dv/apb_gpio_reg_block.svh     RAL: DATA_OUT/DATA_IN(RO)/DIR/INT_STATUS(W1C)/INT_EN
   dv/apb_gpio_env_cfg.svh       env config object
   dv/apb_gpio_ref_model.svh     cycle-exact predictor (+ evt item, 2-FF sync model)
@@ -49,6 +51,17 @@ interface types:
 Default widths (ADDR_WIDTH=8, DATA_WIDTH=32 = NPINS): the standalone build needs
 **no** `+define+APB_ADDR_W`.
 
+Widths are stated **once**. `common/apb_vip/apb_width_defines.svh` holds the
+guarded `` `APB_ADDR_W ``/`` `APB_DATA_W `` macros; `dv/apb_gpio_widths.svh`
+derives `` `APB_GPIO_ADDR_W ``/`` `APB_GPIO_DATA_W `` from them for the files that
+compile at `$unit` (`gpio_if.sv`), and `dv/apb_gpio_params.svh` turns them into the
+package parameters `APB_GPIO_ADDR_WIDTH`, `APB_GPIO_DATA_WIDTH` and
+`APB_GPIO_NUM_PINS` (an alias of the data width — for this IP the pin count and
+`DATA_WIDTH` are the same number by construction). The RAL field widths, the pin
+vectors, the coverage "all pins" bins and the tb top's DUT/interface instances all
+read from those; the tb top declares no width of its own and checks the identity at
+time 0.
+
 ## Run locally
 
 The Makefile `cd`s to the repo root (so `run.f`'s repo-root-relative paths
@@ -82,6 +95,9 @@ the site compiles the *Design* pane first, then *Testbench*):
 - **Design** pane (RTL + interfaces + plain SVA; these are `$unit`/RTL):
   `apb_if.sv`, `gpio_if.sv`, `apb_gpio.sv`,
   `apb_protocol_checker.sv`, `apb_gpio_sva.sv`.
+  `apb_if.sv` `` `include ``s `apb_width_defines.svh` and `gpio_if.sv` `` `include ``s
+  `apb_gpio_widths.svh`, so both header files must exist in the workspace (they are
+  macros only — no declarations — so they can sit in either pane's file set).
 - **Testbench** pane (packages + tb, plus the `.svh` includes reachable via the
   include path): `apb_vip_pkg.sv` and its `.svh` files, `apb_gpio_pkg.sv` and
   all `dv/**/*.svh`, and `apb_gpio_tb_top.sv` last. Make sure the top module

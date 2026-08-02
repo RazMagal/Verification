@@ -57,23 +57,23 @@ class apb_timer_ref_model extends uvm_component;
   uvm_analysis_port #(timer_irq_item)     irq_exp_ap;
   uvm_analysis_port #(apb_timer_evt_item) evt_ap;
 
-  // ---- shadow architectural state (matches apb_timer.sv) ----
-  bit        ctrl_en, ctrl_mode, ctrl_irqen;
-  bit [31:0] load_reg;
-  bit [7:0]  prescale_reg;
-  bit        status_irq;
-  bit [31:0] cnt;
-  bit [7:0]  psc;
+  // ---- shadow architectural state (matches apb_timer.sv, same widths) ----
+  bit                                   ctrl_en, ctrl_mode, ctrl_irqen;
+  bit [APB_TIMER_DATA_WIDTH-1:0]        load_reg;
+  bit [APB_TIMER_PRESCALE_WIDTH-1:0]    prescale_reg;
+  bit                                   status_irq;
+  bit [APB_TIMER_DATA_WIDTH-1:0]        cnt;
+  bit [APB_TIMER_PRESCALE_WIDTH-1:0]    psc;
 
   bit          prev_irq;
   int unsigned cyc;
 
   // register byte offsets (spec 2)
-  localparam bit [7:0] CTRL_OFF     = 8'h00;
-  localparam bit [7:0] LOAD_OFF     = 8'h04;
-  localparam bit [7:0] VALUE_OFF    = 8'h08;
-  localparam bit [7:0] STATUS_OFF   = 8'h0C;
-  localparam bit [7:0] PRESCALE_OFF = 8'h10;
+  localparam bit [APB_TIMER_ADDR_WIDTH-1:0] CTRL_OFF     = 'h00;
+  localparam bit [APB_TIMER_ADDR_WIDTH-1:0] LOAD_OFF     = 'h04;
+  localparam bit [APB_TIMER_ADDR_WIDTH-1:0] VALUE_OFF    = 'h08;
+  localparam bit [APB_TIMER_ADDR_WIDTH-1:0] STATUS_OFF   = 'h0C;
+  localparam bit [APB_TIMER_ADDR_WIDTH-1:0] PRESCALE_OFF = 'h10;
 
   function new(string name = "apb_timer_ref_model", uvm_component parent = null);
     super.new(name, parent);
@@ -94,19 +94,25 @@ class apb_timer_ref_model extends uvm_component;
     cnt = '0; psc = '0;
   endfunction
 
-  function bit is_legal(bit [7:0] a);
+  function bit is_legal(bit [APB_TIMER_ADDR_WIDTH-1:0] a);
     return (a inside {CTRL_OFF, LOAD_OFF, VALUE_OFF, STATUS_OFF, PRESCALE_OFF});
   endfunction
 
   // Predicted read data from the CURRENTLY-VISIBLE register state (reserved=0).
-  function bit [31:0] predict_read(bit [7:0] a);
+  // The reserved padding is DERIVED (RSVD_WIDTH = DATA_WIDTH - flags), so a read
+  // prediction stays exactly register-wide instead of assuming 29/31/24 zeros.
+  function bit [APB_TIMER_DATA_WIDTH-1:0] predict_read(
+      bit [APB_TIMER_ADDR_WIDTH-1:0] a);
     case (a)
-      CTRL_OFF:     predict_read = {29'b0, ctrl_irqen, ctrl_mode, ctrl_en};
+      CTRL_OFF:     predict_read = {{APB_TIMER_CTRL_RSVD_WIDTH{1'b0}},
+                                    ctrl_irqen, ctrl_mode, ctrl_en};
       LOAD_OFF:     predict_read = load_reg;
       VALUE_OFF:    predict_read = cnt;
-      STATUS_OFF:   predict_read = {31'b0, status_irq};
-      PRESCALE_OFF: predict_read = {24'b0, prescale_reg};
-      default:      predict_read = 32'h0;
+      STATUS_OFF:   predict_read = {{APB_TIMER_STATUS_RSVD_WIDTH{1'b0}},
+                                    status_irq};
+      PRESCALE_OFF: predict_read = {{APB_TIMER_PRESC_RSVD_WIDTH{1'b0}},
+                                    prescale_reg};
+      default:      predict_read = '0;
     endcase
   endfunction
 
@@ -136,8 +142,8 @@ class apb_timer_ref_model extends uvm_component;
     bit        s_penable = vif.m_mon_cb.penable;
     bit        s_pready  = vif.m_mon_cb.pready;
     bit        s_pwrite  = vif.m_mon_cb.pwrite;
-    bit [7:0]  s_paddr   = vif.m_mon_cb.paddr;
-    bit [31:0] s_pwdata  = vif.m_mon_cb.pwdata;
+    bit [APB_TIMER_ADDR_WIDTH-1:0] s_paddr  = vif.m_mon_cb.paddr;
+    bit [APB_TIMER_DATA_WIDTH-1:0] s_pwdata = vif.m_mon_cb.pwdata;
 
     bit legal       = is_legal(s_paddr);
     bit beat        = s_psel && s_penable && s_pready;
@@ -145,7 +151,7 @@ class apb_timer_ref_model extends uvm_component;
     bit wr_status   = wr_en && (s_paddr == STATUS_OFF);
     bit start_event = wr_en && (s_paddr == CTRL_OFF) && s_pwdata[0] && !ctrl_en;
     bit timeout     = ctrl_en && (psc == prescale_reg) &&
-                      ((cnt == 32'h0) || (cnt == 32'h1));
+                      ((cnt == '0) || (cnt == APB_TIMER_DATA_WIDTH'(1)));
 
     // ---- 1) predicted irq edge (visible THIS cycle from current state) ----
     bit irq_now = ctrl_irqen & status_irq;
@@ -167,7 +173,7 @@ class apb_timer_ref_model extends uvm_component;
       ex.dir    = s_pwrite ? APB_WRITE : APB_READ;
       ex.wdata  = s_pwdata;
       ex.slverr = ~legal;                                       // unmapped -> pslverr
-      ex.rdata  = (!s_pwrite && legal) ? predict_read(s_paddr) : 32'h0;
+      ex.rdata  = (!s_pwrite && legal) ? predict_read(s_paddr) : '0;
       apb_exp_ap.write(ex);
     end
 
@@ -178,20 +184,20 @@ class apb_timer_ref_model extends uvm_component;
       ev.periodic_reload = ctrl_mode;
       ev.oneshot_expire  = ~ctrl_mode;
       ev.w1c_race        = wr_status && s_pwdata[0];  // W1C same cycle HW sets
-      ev.load_is_zero    = (load_reg == 32'h0);
+      ev.load_is_zero    = (load_reg == '0);
       evt_ap.write(ev);
     end
 
     // ---- 4) next-state (RTL-identical; all RHS use CURRENT state) ----
     begin
-      bit        n_en    = ctrl_en;
-      bit        n_mode  = ctrl_mode;
-      bit        n_irqen = ctrl_irqen;
-      bit [31:0] n_load  = load_reg;
-      bit [7:0]  n_pre   = prescale_reg;
-      bit        n_sirq  = status_irq;
-      bit [31:0] n_cnt   = cnt;
-      bit [7:0]  n_psc   = psc;
+      bit                                n_en    = ctrl_en;
+      bit                                n_mode  = ctrl_mode;
+      bit                                n_irqen = ctrl_irqen;
+      bit [APB_TIMER_DATA_WIDTH-1:0]     n_load  = load_reg;
+      bit [APB_TIMER_PRESCALE_WIDTH-1:0] n_pre   = prescale_reg;
+      bit                                n_sirq  = status_irq;
+      bit [APB_TIMER_DATA_WIDTH-1:0]     n_cnt   = cnt;
+      bit [APB_TIMER_PRESCALE_WIDTH-1:0] n_psc   = psc;
 
       // 4a) APB register writes (control/config).
       if (wr_en) begin
@@ -202,7 +208,7 @@ class apb_timer_ref_model extends uvm_component;
             n_irqen = s_pwdata[2];
           end
           LOAD_OFF:     n_load = s_pwdata;
-          PRESCALE_OFF: n_pre  = s_pwdata[7:0];
+          PRESCALE_OFF: n_pre  = s_pwdata[APB_TIMER_PRESCALE_WIDTH-1:0];
           default: /* STATUS -> W1C below; VALUE -> RO dropped */ ;
         endcase
       end
@@ -210,16 +216,16 @@ class apb_timer_ref_model extends uvm_component;
       // 4b) prescaler / down-counter (start_event and counting are exclusive).
       if (start_event) begin
         n_cnt = load_reg;
-        n_psc = 8'h0;
+        n_psc = '0;
       end
       else if (ctrl_en) begin
         if (psc == prescale_reg) begin
-          n_psc = 8'h0;
-          if (timeout) n_cnt = ctrl_mode ? load_reg : 32'h0;
-          else         n_cnt = cnt - 32'h1;
+          n_psc = '0;
+          if (timeout) n_cnt = ctrl_mode ? load_reg : '0;
+          else         n_cnt = cnt - 1'b1;
         end
         else begin
-          n_psc = psc + 8'h1;
+          n_psc = psc + 1'b1;
         end
       end
 

@@ -27,10 +27,10 @@ class gpio_monitor extends uvm_monitor;
   endfunction
 
   task run_phase(uvm_phase phase);
-    bit [APB_DATA_WIDTH-1:0] prev_out = '0;
-    bit [APB_DATA_WIDTH-1:0] prev_oe  = '0;
+    bit [APB_GPIO_NUM_PINS-1:0] prev_out = '0;
+    bit [APB_GPIO_NUM_PINS-1:0] prev_oe  = '0;
     bit                      prev_irq = 1'b0;
-    bit [APB_DATA_WIDTH-1:0] c_out, c_oe, c_in;
+    bit [APB_GPIO_NUM_PINS-1:0] c_out, c_oe, c_in;
     bit                      c_irq;
     int unsigned             cyc = 0;
     super.run_phase(phase);

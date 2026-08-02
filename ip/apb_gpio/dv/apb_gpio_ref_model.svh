@@ -70,26 +70,28 @@ class apb_gpio_ref_model extends uvm_component;
   uvm_analysis_port #(apb_gpio_evt_item) evt_ap;
 
   // ---- shadow architectural state (matches apb_gpio.sv) ----
-  bit [31:0] dout_q;      // DATA_OUT register
-  bit [31:0] dir_q;       // DIR register
-  bit [31:0] inten_q;     // INT_EN register
-  bit [31:0] intstat_q;   // INT_STATUS register (sticky)
-  bit [31:0] g_meta;      // 1st sync flop  (din_meta)
-  bit [31:0] g_sync;      // 2nd sync flop  (din_sync == DATA_IN value)
+  // One bit per pin, exactly like the DUT registers (APB_GPIO_NUM_PINS IS the
+  // IP's DATA_WIDTH - see apb_gpio_params.svh).
+  bit [APB_GPIO_NUM_PINS-1:0] dout_q;      // DATA_OUT register
+  bit [APB_GPIO_NUM_PINS-1:0] dir_q;       // DIR register
+  bit [APB_GPIO_NUM_PINS-1:0] inten_q;     // INT_EN register
+  bit [APB_GPIO_NUM_PINS-1:0] intstat_q;   // INT_STATUS register (sticky)
+  bit [APB_GPIO_NUM_PINS-1:0] g_meta;      // 1st sync flop  (din_meta)
+  bit [APB_GPIO_NUM_PINS-1:0] g_sync;      // 2nd sync flop  (din_sync == DATA_IN)
 
   // baselines for change-detection on the predicted outputs
-  bit [31:0] prev_out;
-  bit [31:0] prev_oe;
+  bit [APB_GPIO_NUM_PINS-1:0] prev_out;
+  bit [APB_GPIO_NUM_PINS-1:0] prev_oe;
   bit        prev_irq;
 
   int unsigned cyc;
 
   // register byte offsets (spec 2)
-  localparam bit [7:0] DATA_OUT_OFF   = 8'h00;
-  localparam bit [7:0] DATA_IN_OFF    = 8'h04;
-  localparam bit [7:0] DIR_OFF        = 8'h08;
-  localparam bit [7:0] INT_STATUS_OFF = 8'h0C;
-  localparam bit [7:0] INT_EN_OFF     = 8'h10;
+  localparam bit [APB_GPIO_ADDR_WIDTH-1:0] DATA_OUT_OFF   = 'h00;
+  localparam bit [APB_GPIO_ADDR_WIDTH-1:0] DATA_IN_OFF    = 'h04;
+  localparam bit [APB_GPIO_ADDR_WIDTH-1:0] DIR_OFF        = 'h08;
+  localparam bit [APB_GPIO_ADDR_WIDTH-1:0] INT_STATUS_OFF = 'h0C;
+  localparam bit [APB_GPIO_ADDR_WIDTH-1:0] INT_EN_OFF     = 'h10;
 
   function new(string name = "apb_gpio_ref_model", uvm_component parent = null);
     super.new(name, parent);
@@ -112,20 +114,20 @@ class apb_gpio_ref_model extends uvm_component;
     g_meta = '0; g_sync = '0;
   endfunction
 
-  function bit is_legal(bit [7:0] a);
+  function bit is_legal(bit [APB_GPIO_ADDR_WIDTH-1:0] a);
     return (a inside {DATA_OUT_OFF, DATA_IN_OFF, DIR_OFF,
                       INT_STATUS_OFF, INT_EN_OFF});
   endfunction
 
   // Predicted read data from the CURRENTLY-VISIBLE register state.
-  function bit [31:0] predict_read(bit [7:0] a);
+  function bit [APB_GPIO_DATA_WIDTH-1:0] predict_read(bit [APB_GPIO_ADDR_WIDTH-1:0] a);
     case (a)
       DATA_OUT_OFF:   predict_read = dout_q;
       DATA_IN_OFF:    predict_read = g_sync;      // synchronized live sample
       DIR_OFF:        predict_read = dir_q;
       INT_STATUS_OFF: predict_read = intstat_q;
       INT_EN_OFF:     predict_read = inten_q;
-      default:        predict_read = 32'h0;
+      default:        predict_read = '0;
     endcase
   endfunction
 
@@ -155,10 +157,10 @@ class apb_gpio_ref_model extends uvm_component;
     bit        s_penable = vif.m_mon_cb.penable;
     bit        s_pready  = vif.m_mon_cb.pready;
     bit        s_pwrite  = vif.m_mon_cb.pwrite;
-    bit [7:0]  s_paddr   = vif.m_mon_cb.paddr;
-    bit [31:0] s_pwdata  = vif.m_mon_cb.pwdata;
+    bit [APB_GPIO_ADDR_WIDTH-1:0] s_paddr  = vif.m_mon_cb.paddr;
+    bit [APB_GPIO_DATA_WIDTH-1:0] s_pwdata = vif.m_mon_cb.pwdata;
     // ---- sample the external pins (preponed, same as gpio_monitor) ----
-    bit [31:0] s_gpio_in = pin_vif.mon_cb.gpio_in;
+    bit [APB_GPIO_NUM_PINS-1:0]   s_gpio_in = pin_vif.mon_cb.gpio_in;
 
     bit legal      = is_legal(s_paddr);
     bit beat       = s_psel && s_penable && s_pready;
@@ -170,13 +172,13 @@ class apb_gpio_ref_model extends uvm_component;
 
     // rising edge = stage-1 high, stage-2 still low (RTL: din_meta & ~din_sync),
     // taken from the CURRENT shadow == din_rise of the previous cycle.
-    bit [31:0] rise = g_meta & ~g_sync;
+    bit [APB_GPIO_NUM_PINS-1:0] rise = g_meta & ~g_sync;
     // per-pin SW clear request on a completing INT_STATUS write.
-    bit [31:0] clr  = wr_intstat ? s_pwdata : 32'h0;
+    bit [APB_GPIO_NUM_PINS-1:0] clr  = wr_intstat ? s_pwdata : '0;
 
     // ---- predicted outputs visible THIS cycle from current shadow ----
-    bit [31:0] out_now  = dout_q;
-    bit [31:0] oe_now   = dir_q;
+    bit [APB_GPIO_NUM_PINS-1:0] out_now = dout_q;
+    bit [APB_GPIO_NUM_PINS-1:0] oe_now  = dir_q;
     bit        irq_now  = |(intstat_q & inten_q);
     bit        irq_rose = irq_now & ~prev_irq;
 
@@ -202,7 +204,7 @@ class apb_gpio_ref_model extends uvm_component;
       ex.dir    = s_pwrite ? APB_WRITE : APB_READ;
       ex.wdata  = s_pwdata;
       ex.slverr = ~legal;                                     // unmapped -> pslverr
-      ex.rdata  = (!s_pwrite && legal) ? predict_read(s_paddr) : 32'h0;
+      ex.rdata  = (!s_pwrite && legal) ? predict_read(s_paddr) : '0;
       apb_exp_ap.write(ex);
     end
 
@@ -220,12 +222,12 @@ class apb_gpio_ref_model extends uvm_component;
 
     // ---- 4) next-state (RTL-identical; all RHS use CURRENT state) ----
     begin
-      bit [31:0] n_dout    = dout_q;
-      bit [31:0] n_dir     = dir_q;
-      bit [31:0] n_inten   = inten_q;
-      bit [31:0] n_intstat;
-      bit [31:0] n_meta;
-      bit [31:0] n_sync;
+      bit [APB_GPIO_NUM_PINS-1:0] n_dout   = dout_q;
+      bit [APB_GPIO_NUM_PINS-1:0] n_dir    = dir_q;
+      bit [APB_GPIO_NUM_PINS-1:0] n_inten  = inten_q;
+      bit [APB_GPIO_NUM_PINS-1:0] n_intstat;
+      bit [APB_GPIO_NUM_PINS-1:0] n_meta;
+      bit [APB_GPIO_NUM_PINS-1:0] n_sync;
 
       // 4a) APB register writes (DATA_IN is RO -> dropped; INT_STATUS -> W1C below)
       if (wr_dout)  n_dout  = s_pwdata;

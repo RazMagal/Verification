@@ -61,10 +61,12 @@ class apb_subsystem_reg_block extends uvm_reg_block;
     timer1.build();
     default_map.add_submap(timer1.default_map, TIMER1_BASE);
 
-    // ---- mem : 64 x 32-bit RW memory at page 0x200 ----
+    // ---- mem : 64 words of RW memory at page 0x200 ----
     // uvm_mem takes ctor args (size,n_bits) so it is built via new(), then
-    // configured into this block and added to the root map.
-    mem = new("mem", MEM_WORDS, 32, "RW", UVM_NO_COVERAGE);
+    // configured into this block and added to the root map. The word width is
+    // the APB data width (apb_mem_slave stores whole pwdata words), so it is
+    // taken from the VIP's single source rather than restated as 32.
+    mem = new("mem", MEM_WORDS, APB_DATA_WIDTH, "RW", UVM_NO_COVERAGE);
     mem.configure(this, "");
     default_map.add_mem(mem, MEM_BASE, "RW");
 

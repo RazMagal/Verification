@@ -11,6 +11,11 @@ package apb_timer_pkg;
 
   import apb_vip_pkg::*;
 
+  // widths FIRST: everything below (RAL field + reserved-field widths, the
+  // reference model's shadow state, coverage bins, and the tb top's DUT
+  // instance) derives from these.
+  `include "apb_timer_params.svh"
+
   // RAL + config
   `include "apb_timer_reg_block.svh"
   `include "apb_timer_env_cfg.svh"

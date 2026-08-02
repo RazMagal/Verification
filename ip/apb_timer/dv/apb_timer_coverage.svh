@@ -6,7 +6,7 @@
 //
 //   Coverage plan hit here:
 //     CTRL.EN, CTRL.MODE, CTRL.IRQ_EN and MODE x IRQ_EN cross
-//     PRESCALE bins {0, 1..15, 16..254, 255}
+//     PRESCALE bins {0, 1..15, 16..MAX-1, MAX}  (MAX = all ones of the field)
 //     LOAD     bins {0, 1, 2..15, large}
 //     pslverr seen
 //     timeout occurred; one-shot expire vs periodic reload; LOAD==0 timeout;
@@ -26,10 +26,11 @@ class apb_timer_coverage extends uvm_component;
 
   bit cov_enable = 1'b1;
 
-  localparam bit [7:0] CTRL_OFF     = 8'h00;
-  localparam bit [7:0] LOAD_OFF     = 8'h04;
-  localparam bit [7:0] STATUS_OFF   = 8'h0C;
-  localparam bit [7:0] PRESCALE_OFF = 8'h10;
+  // Byte offsets are as wide as the bus the monitor reports (apb_seq_item.addr).
+  localparam bit [APB_TIMER_ADDR_WIDTH-1:0] CTRL_OFF     = 'h00;
+  localparam bit [APB_TIMER_ADDR_WIDTH-1:0] LOAD_OFF     = 'h04;
+  localparam bit [APB_TIMER_ADDR_WIDTH-1:0] STATUS_OFF   = 'h0C;
+  localparam bit [APB_TIMER_ADDR_WIDTH-1:0] PRESCALE_OFF = 'h10;
 
   // ---- CTRL configuration coverage ----
   covergroup cg_ctrl with function sample(bit en, bit mode, bit irqen);
@@ -42,19 +43,20 @@ class apb_timer_coverage extends uvm_component;
   endgroup
 
   // ---- PRESCALE value coverage ----
-  covergroup cg_prescale with function sample(bit [7:0] p);
+  covergroup cg_prescale with function sample(
+      bit [APB_TIMER_PRESCALE_WIDTH-1:0] p);
     option.per_instance = 1;
     option.name         = "cg_prescale";
     cp_prescale : coverpoint p {
       bins zero  = {0};
       bins lo    = {[1:15]};
-      bins mid   = {[16:254]};
-      bins max   = {255};
+      bins mid   = {[16:APB_TIMER_PRESCALE_MAX-1]};
+      bins max   = {APB_TIMER_PRESCALE_MAX};   // all ones of the PRESCALE field
     }
   endgroup
 
   // ---- LOAD value coverage ----
-  covergroup cg_load with function sample(bit [31:0] l);
+  covergroup cg_load with function sample(bit [APB_TIMER_DATA_WIDTH-1:0] l);
     option.per_instance = 1;
     option.name         = "cg_load";
     cp_load : coverpoint l {
@@ -102,7 +104,7 @@ class apb_timer_coverage extends uvm_component;
     if (t.dir == APB_WRITE) begin
       case (t.addr)
         CTRL_OFF:     cg_ctrl.sample(t.wdata[0], t.wdata[1], t.wdata[2]);
-        PRESCALE_OFF: cg_prescale.sample(t.wdata[7:0]);
+        PRESCALE_OFF: cg_prescale.sample(t.wdata[APB_TIMER_PRESCALE_WIDTH-1:0]);
         LOAD_OFF:     cg_load.sample(t.wdata);
         default: /* other addresses covered by cg_err / VIP coverage */ ;
       endcase

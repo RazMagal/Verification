@@ -1,12 +1,19 @@
 // -----------------------------------------------------------------------------
 // apb_timer_reg_block.svh : UVM RAL model for the apb_timer register map (spec 2)
 //
-//   Registers (byte offsets, 32-bit, little-endian, base 0x0):
-//     0x00 CTRL     RW   : EN[0], MODE[1], IRQ_EN[2], reserved[31:3] RO
-//     0x04 LOAD     RW   : LOAD[31:0]
-//     0x08 VALUE    RO   : VALUE[31:0]        (volatile - live HW counter)
-//     0x0C STATUS   RW1C : IRQ[0] W1C, reserved[31:1] RO   (volatile - HW sets)
-//     0x10 PRESCALE RW   : PRESCALE[7:0], reserved[31:8] RO
+//   Registers (byte offsets, APB_TIMER_DATA_WIDTH-bit, little-endian, base 0x0):
+//     0x00 CTRL     RW   : EN[0], MODE[1], IRQ_EN[2], reserved[DATA-1:3] RO
+//     0x04 LOAD     RW   : LOAD[DATA-1:0]
+//     0x08 VALUE    RO   : VALUE[DATA-1:0]      (volatile - live HW counter)
+//     0x0C STATUS   RW1C : IRQ[0] W1C, reserved[DATA-1:1] RO (volatile - HW sets)
+//     0x10 PRESCALE RW   : PRESCALE[PRESC-1:0], reserved[DATA-1:PRESC] RO
+//
+//   Every width comes from apb_timer_params.svh. The RESERVED fields are the
+//   dangerous ones - a stale literal 29/31/24 would silently overlap a real
+//   field or leave a hole once the data width moves - so they are stated as
+//   "the rest of the register": width = DATA_WIDTH - lsb, lsb = the flag count
+//   (CTRL) / the PRESCALE field width. With the defaults this is still 29@3,
+//   31@1 and 24@8, bit for bit.
 //
 //   All reset values are 0. Access policies are exactly the spec's. VALUE and
 //   STATUS.IRQ are volatile (HW updated); their mirror is maintained by an
@@ -26,7 +33,7 @@ class apb_timer_ctrl_reg extends uvm_reg;
        uvm_reg_field RSVD;
 
   function new(string name = "apb_timer_ctrl_reg");
-    super.new(name, 32, UVM_NO_COVERAGE);
+    super.new(name, APB_TIMER_DATA_WIDTH, UVM_NO_COVERAGE);
   endfunction
 
   virtual function void build();
@@ -35,10 +42,13 @@ class apb_timer_ctrl_reg extends uvm_reg;
     IRQ_EN = uvm_reg_field::type_id::create("IRQ_EN");
     RSVD   = uvm_reg_field::type_id::create("RSVD");
     // configure(parent,size,lsb,access,volatile,reset,has_reset,is_rand,indiv_acc)
-    EN.configure    (this,  1,  0, "RW", 0, 1'h0,  1, 1, 0);
-    MODE.configure  (this,  1,  1, "RW", 0, 1'h0,  1, 1, 0);
-    IRQ_EN.configure(this,  1,  2, "RW", 0, 1'h0,  1, 1, 0);
-    RSVD.configure  (this, 29,  3, "RO", 0, 29'h0, 1, 0, 0);
+    // Flags occupy the low APB_TIMER_CTRL_FLAGS bits (spec 2.1); RSVD is
+    // everything above them, so the two can never overlap or leave a hole.
+    EN.configure    (this, 1, 0, "RW", 0, APB_TIMER_REG_RESET, 1, 1, 0);
+    MODE.configure  (this, 1, 1, "RW", 0, APB_TIMER_REG_RESET, 1, 1, 0);
+    IRQ_EN.configure(this, 1, 2, "RW", 0, APB_TIMER_REG_RESET, 1, 1, 0);
+    RSVD.configure  (this, APB_TIMER_CTRL_RSVD_WIDTH, APB_TIMER_CTRL_RSVD_LSB,
+                     "RO", 0, APB_TIMER_REG_RESET, 1, 0, 0);
   endfunction
 endclass
 
@@ -49,12 +59,13 @@ class apb_timer_load_reg extends uvm_reg;
   rand uvm_reg_field VAL;
 
   function new(string name = "apb_timer_load_reg");
-    super.new(name, 32, UVM_NO_COVERAGE);
+    super.new(name, APB_TIMER_DATA_WIDTH, UVM_NO_COVERAGE);
   endfunction
 
   virtual function void build();
     VAL = uvm_reg_field::type_id::create("VAL");
-    VAL.configure(this, 32, 0, "RW", 0, 32'h0, 1, 1, 0);
+    VAL.configure(this, APB_TIMER_DATA_WIDTH, 0, "RW", 0,
+                  APB_TIMER_REG_RESET, 1, 1, 0);
   endfunction
 endclass
 
@@ -65,13 +76,14 @@ class apb_timer_value_reg extends uvm_reg;
   uvm_reg_field VAL;
 
   function new(string name = "apb_timer_value_reg");
-    super.new(name, 32, UVM_NO_COVERAGE);
+    super.new(name, APB_TIMER_DATA_WIDTH, UVM_NO_COVERAGE);
   endfunction
 
   virtual function void build();
     VAL = uvm_reg_field::type_id::create("VAL");
     // volatile=1 : HW updates this live; RO from the bus.
-    VAL.configure(this, 32, 0, "RO", 1, 32'h0, 1, 0, 0);
+    VAL.configure(this, APB_TIMER_DATA_WIDTH, 0, "RO", 1,
+                  APB_TIMER_REG_RESET, 1, 0, 0);
   endfunction
 endclass
 
@@ -83,15 +95,16 @@ class apb_timer_status_reg extends uvm_reg;
        uvm_reg_field RSVD;
 
   function new(string name = "apb_timer_status_reg");
-    super.new(name, 32, UVM_NO_COVERAGE);
+    super.new(name, APB_TIMER_DATA_WIDTH, UVM_NO_COVERAGE);
   endfunction
 
   virtual function void build();
     IRQ  = uvm_reg_field::type_id::create("IRQ");
     RSVD = uvm_reg_field::type_id::create("RSVD");
     // W1C, volatile (HW set on timeout).
-    IRQ.configure (this,  1, 0, "W1C", 1, 1'h0,  1, 1, 0);
-    RSVD.configure(this, 31, 1, "RO",  0, 31'h0, 1, 0, 0);
+    IRQ.configure (this, 1, 0, "W1C", 1, APB_TIMER_REG_RESET, 1, 1, 0);
+    RSVD.configure(this, APB_TIMER_STATUS_RSVD_WIDTH, APB_TIMER_STATUS_RSVD_LSB,
+                   "RO", 0, APB_TIMER_REG_RESET, 1, 0, 0);
   endfunction
 endclass
 
@@ -103,14 +116,16 @@ class apb_timer_prescale_reg extends uvm_reg;
        uvm_reg_field RSVD;
 
   function new(string name = "apb_timer_prescale_reg");
-    super.new(name, 32, UVM_NO_COVERAGE);
+    super.new(name, APB_TIMER_DATA_WIDTH, UVM_NO_COVERAGE);
   endfunction
 
   virtual function void build();
     VAL  = uvm_reg_field::type_id::create("VAL");
     RSVD = uvm_reg_field::type_id::create("RSVD");
-    VAL.configure (this,  8, 0, "RW", 0, 8'h0,  1, 1, 0);
-    RSVD.configure(this, 24, 8, "RO", 0, 24'h0, 1, 0, 0);
+    VAL.configure (this, APB_TIMER_PRESCALE_WIDTH, 0, "RW", 0,
+                   APB_TIMER_REG_RESET, 1, 1, 0);
+    RSVD.configure(this, APB_TIMER_PRESC_RSVD_WIDTH, APB_TIMER_PRESC_RSVD_LSB,
+                   "RO", 0, APB_TIMER_REG_RESET, 1, 0, 0);
   endfunction
 endclass
 

@@ -8,11 +8,17 @@
 //     SAMPLED race-free by the pin monitor (through mon_cb).
 //   - Same clk / active-low rst_n as the APB side.
 //
-//   DATA_WIDTH defaults to 32 (== NPINS). A `virtual gpio_if` handle is
-//   unparameterized and takes this default, so every gpio_if instance in one
-//   build must share the width (the standalone build uses the default 32).
+//   DATA_WIDTH is the PIN COUNT (== the IP's DATA_WIDTH, spec: NPINS ==
+//   DATA_WIDTH) and its default is NOT written here: it comes from
+//   `APB_GPIO_DATA_W, the same macro apb_gpio_params.svh elaborates the package
+//   parameters from. This file compiles at $unit, before any package, so it has
+//   to take the width as a macro. A `virtual gpio_if` handle is unparameterized
+//   and takes this default, so every gpio_if instance in one build must share
+//   the width - the tb top therefore instantiates it with no override at all.
 // -----------------------------------------------------------------------------
-interface gpio_if #(parameter int DATA_WIDTH = 32)
+`include "apb_gpio_widths.svh"
+
+interface gpio_if #(parameter int DATA_WIDTH = `APB_GPIO_DATA_W)
                    (input logic clk, input logic rst_n);
 
   logic [DATA_WIDTH-1:0] gpio_in;   // DV-driven external pin inputs

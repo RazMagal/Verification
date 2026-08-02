@@ -37,7 +37,7 @@ class apb_timer_scoreboard extends uvm_scoreboard;
   int unsigned apb_checks, apb_pass, apb_fail;
   int unsigned irq_checks, irq_pass, irq_fail;
 
-  localparam bit [7:0] VALUE_OFF = 8'h08;
+  localparam bit [APB_TIMER_ADDR_WIDTH-1:0] VALUE_OFF = 'h08;
 
   function new(string name = "apb_timer_scoreboard", uvm_component parent = null);
     super.new(name, parent);

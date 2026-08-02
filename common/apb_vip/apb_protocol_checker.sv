@@ -20,10 +20,17 @@
 //   Assumptions: single-clock APB3, active-low rst_n, checks disabled in reset.
 //   Wait states are tolerated (properties key off pready), even though the
 //   apb_timer v1.0 never inserts any.
+//
+//   The parameter DEFAULTS below are the shared `APB_ADDR_W / `APB_DATA_W macros
+//   (apb_width_defines.svh), not literals, so a bind that forgets the overrides
+//   still gets the build's real widths instead of a stale 8/32. Every bind in
+//   this repo passes the enclosing apb_if's own ADDR_WIDTH/DATA_WIDTH anyway.
 // -----------------------------------------------------------------------------
+`include "apb_width_defines.svh"
+
 module apb_protocol_checker #(
-    parameter int ADDR_WIDTH = 8,
-    parameter int DATA_WIDTH = 32
+    parameter int ADDR_WIDTH = `APB_ADDR_W,
+    parameter int DATA_WIDTH = `APB_DATA_W
 ) (
     input logic                  clk,
     input logic                  rst_n,

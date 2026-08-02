@@ -11,6 +11,10 @@ package apb_gpio_pkg;
 
   import apb_vip_pkg::*;
 
+  // widths FIRST: everything below (RAL field widths, pin vectors, coverage
+  // bins, and the tb top's DUT/interface instances) derives from these.
+  `include "apb_gpio_params.svh"
+
   // RAL + config
   `include "apb_gpio_reg_block.svh"
   `include "apb_gpio_env_cfg.svh"

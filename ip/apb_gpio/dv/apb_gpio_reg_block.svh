@@ -1,12 +1,17 @@
 // -----------------------------------------------------------------------------
 // apb_gpio_reg_block.svh : UVM RAL model for the apb_gpio register map (spec 2)
 //
-//   Registers (byte offsets, 32-bit, little-endian, base 0x0):
+//   Registers (byte offsets, APB_GPIO_DATA_WIDTH-bit, little-endian, base 0x0):
 //     0x00 DATA_OUT   RW   : value driven onto gpio_out (all pins)
 //     0x04 DATA_IN    RO   : synchronized live sample of gpio_in (volatile)
 //     0x08 DIR        RW   : per-pin direction / output enable (1=out, 0=in)
 //     0x0C INT_STATUS RW1C : per-pin rising-edge flag, sticky (volatile - HW sets)
 //     0x10 INT_EN     RW   : per-pin interrupt enable
+//
+//   All widths come from apb_gpio_params.svh: each register is one bit PER PIN
+//   (field width = APB_GPIO_NUM_PINS, which IS APB_GPIO_DATA_WIDTH), so bit i of
+//   every register and pin i are the same index by construction - there is no
+//   literal 32 here that could disagree with the DUT's DATA_WIDTH.
 //
 //   All reset values are 0; every bit maps to a pin index. DATA_IN mirrors the
 //   external stimulus (volatile RO) and INT_STATUS is HW-set W1C; both are
@@ -24,13 +29,14 @@ class apb_gpio_data_out_reg extends uvm_reg;
   rand uvm_reg_field VAL;
 
   function new(string name = "apb_gpio_data_out_reg");
-    super.new(name, 32, UVM_NO_COVERAGE);
+    super.new(name, APB_GPIO_DATA_WIDTH, UVM_NO_COVERAGE);
   endfunction
 
   virtual function void build();
     VAL = uvm_reg_field::type_id::create("VAL");
     // configure(parent,size,lsb,access,volatile,reset,has_reset,is_rand,indiv_acc)
-    VAL.configure(this, 32, 0, "RW", 0, 32'h0, 1, 1, 0);
+    VAL.configure(this, APB_GPIO_NUM_PINS, 0, "RW", 0,
+                  APB_GPIO_REG_RESET, 1, 1, 0);
   endfunction
 endclass
 
@@ -41,13 +47,14 @@ class apb_gpio_data_in_reg extends uvm_reg;
   uvm_reg_field VAL;
 
   function new(string name = "apb_gpio_data_in_reg");
-    super.new(name, 32, UVM_NO_COVERAGE);
+    super.new(name, APB_GPIO_DATA_WIDTH, UVM_NO_COVERAGE);
   endfunction
 
   virtual function void build();
     VAL = uvm_reg_field::type_id::create("VAL");
     // volatile=1 : HW updates this live from the synchronized pins; RO from bus.
-    VAL.configure(this, 32, 0, "RO", 1, 32'h0, 1, 0, 0);
+    VAL.configure(this, APB_GPIO_NUM_PINS, 0, "RO", 1,
+                  APB_GPIO_REG_RESET, 1, 0, 0);
   endfunction
 endclass
 
@@ -58,12 +65,13 @@ class apb_gpio_dir_reg extends uvm_reg;
   rand uvm_reg_field VAL;
 
   function new(string name = "apb_gpio_dir_reg");
-    super.new(name, 32, UVM_NO_COVERAGE);
+    super.new(name, APB_GPIO_DATA_WIDTH, UVM_NO_COVERAGE);
   endfunction
 
   virtual function void build();
     VAL = uvm_reg_field::type_id::create("VAL");
-    VAL.configure(this, 32, 0, "RW", 0, 32'h0, 1, 1, 0);
+    VAL.configure(this, APB_GPIO_NUM_PINS, 0, "RW", 0,
+                  APB_GPIO_REG_RESET, 1, 1, 0);
   endfunction
 endclass
 
@@ -74,13 +82,14 @@ class apb_gpio_int_status_reg extends uvm_reg;
   rand uvm_reg_field VAL;
 
   function new(string name = "apb_gpio_int_status_reg");
-    super.new(name, 32, UVM_NO_COVERAGE);
+    super.new(name, APB_GPIO_DATA_WIDTH, UVM_NO_COVERAGE);
   endfunction
 
   virtual function void build();
     VAL = uvm_reg_field::type_id::create("VAL");
     // W1C, volatile (HW sets on a rising edge of din_sync).
-    VAL.configure(this, 32, 0, "W1C", 1, 32'h0, 1, 1, 0);
+    VAL.configure(this, APB_GPIO_NUM_PINS, 0, "W1C", 1,
+                  APB_GPIO_REG_RESET, 1, 1, 0);
   endfunction
 endclass
 
@@ -91,12 +100,13 @@ class apb_gpio_int_en_reg extends uvm_reg;
   rand uvm_reg_field VAL;
 
   function new(string name = "apb_gpio_int_en_reg");
-    super.new(name, 32, UVM_NO_COVERAGE);
+    super.new(name, APB_GPIO_DATA_WIDTH, UVM_NO_COVERAGE);
   endfunction
 
   virtual function void build();
     VAL = uvm_reg_field::type_id::create("VAL");
-    VAL.configure(this, 32, 0, "RW", 0, 32'h0, 1, 1, 0);
+    VAL.configure(this, APB_GPIO_NUM_PINS, 0, "RW", 0,
+                  APB_GPIO_REG_RESET, 1, 1, 0);
   endfunction
 endclass
 

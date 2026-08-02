@@ -10,6 +10,7 @@ layer, bound SVA, and a per-vseq test library. Standard UVM-1.2 / IEEE 1800.2.
 ip/apb_timer/
   rtl/apb_timer.sv          DUT (do not modify)
   rtl/apb_timer_sva.sv      timer SVA (bound onto the DUT)
+  dv/apb_timer_params.svh       width macros -> package parameters (included FIRST)
   dv/apb_timer_reg_block.svh    RAL: CTRL/LOAD/VALUE/STATUS(W1C)/PRESCALE
   dv/apb_timer_env_cfg.svh      env config object
   dv/apb_timer_ref_model.svh    tick-accurate predictor (+ evt item)
@@ -41,6 +42,16 @@ interface types:
 5. `ip/apb_timer/tb/apb_timer_tb_top.sv`
 
 `+incdir` lines in `run.f` point at every directory holding a `.svh`.
+
+Widths are stated **once**. `common/apb_vip/apb_width_defines.svh` holds the
+guarded `` `APB_ADDR_W ``/`` `APB_DATA_W `` macros; `dv/apb_timer_params.svh`
+derives `` `APB_TIMER_ADDR_W ``/`` `APB_TIMER_DATA_W `` from them (plus the IP's own
+`` `APB_TIMER_PRESC_W ``) and turns them into package parameters. The RAL field
+widths — including the **reserved** fields, which are `DATA_WIDTH - lsb`, never a
+literal 29/31/24 — the reference model's shadow state, the coverage bins and the tb
+top's DUT instance all read from those. `soc/apb_subsystem` reuses this RAL under
+`+define+APB_ADDR_W=12`; the register geometry is address-width-independent, so it
+elaborates identically there.
 
 ## Run locally
 
@@ -76,6 +87,9 @@ the site compiles the *Design* pane first, then *Testbench*):
 - **Design** pane (RTL + interfaces + plain SVA; these are `$unit`/RTL):
   `apb_if.sv`, `timer_irq_if.sv`, `apb_timer.sv`,
   `apb_protocol_checker.sv`, `apb_timer_sva.sv`.
+  `apb_if.sv` `` `include ``s `apb_width_defines.svh`, so that header must exist in
+  the workspace (macros only — no declarations — so it can sit in either pane's
+  file set).
 - **Testbench** pane (packages + tb, plus the `.svh` includes reachable via the
   include path): `apb_vip_pkg.sv` and its `.svh` files, `apb_timer_pkg.sv` and
   all `dv/**/*.svh`, and `apb_timer_tb_top.sv` last. Make sure the top module

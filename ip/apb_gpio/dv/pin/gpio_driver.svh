@@ -12,7 +12,7 @@ class gpio_driver extends uvm_driver #(gpio_item);
   `uvm_component_utils(gpio_driver)
 
   virtual gpio_if               vif;
-  bit [APB_DATA_WIDTH-1:0]      cur;   // shadow of the driven gpio_in
+  bit [APB_GPIO_NUM_PINS-1:0]   cur;   // shadow of the driven gpio_in
 
   function new(string name = "gpio_driver", uvm_component parent = null);
     super.new(name, parent);

@@ -10,6 +10,10 @@
 //     DATA_OUT activity : zero / all-ones / mixed drive
 //     pslverr seen (ok / err)
 //     edge detected; irq asserted; W1C-vs-HW-set race observed
+//
+//   The "all pins" bins use APB_GPIO_PINS_ALL / _NONE (all ones / all zeros of
+//   the PIN COUNT, from apb_gpio_params.svh) rather than a literal
+//   32'hFFFF_FFFF, so "all outputs" keeps meaning all outputs.
 // -----------------------------------------------------------------------------
 `ifndef APB_GPIO_COVERAGE_SVH
 `define APB_GPIO_COVERAGE_SVH
@@ -25,39 +29,40 @@ class apb_gpio_coverage extends uvm_component;
 
   bit cov_enable = 1'b1;
 
-  localparam bit [7:0] DATA_OUT_OFF   = 8'h00;
-  localparam bit [7:0] DIR_OFF        = 8'h08;
-  localparam bit [7:0] INT_EN_OFF     = 8'h10;
+  // Byte offsets are as wide as the bus the monitor reports (apb_seq_item.addr).
+  localparam bit [APB_GPIO_ADDR_WIDTH-1:0] DATA_OUT_OFF = 'h00;
+  localparam bit [APB_GPIO_ADDR_WIDTH-1:0] DIR_OFF      = 'h08;
+  localparam bit [APB_GPIO_ADDR_WIDTH-1:0] INT_EN_OFF   = 'h10;
 
   // ---- DIR configuration coverage ----
-  covergroup cg_dir with function sample(bit [31:0] d);
+  covergroup cg_dir with function sample(bit [APB_GPIO_NUM_PINS-1:0] d);
     option.per_instance = 1;
     option.name         = "cg_dir";
     cp_dir : coverpoint d {
-      bins all_in  = {32'h0000_0000};
-      bins all_out = {32'hFFFF_FFFF};
+      bins all_in  = {APB_GPIO_PINS_NONE};
+      bins all_out = {APB_GPIO_PINS_ALL};
       bins mixed   = default;
     }
   endgroup
 
   // ---- INT_EN configuration coverage ----
-  covergroup cg_inten with function sample(bit [31:0] e);
+  covergroup cg_inten with function sample(bit [APB_GPIO_NUM_PINS-1:0] e);
     option.per_instance = 1;
     option.name         = "cg_inten";
     cp_inten : coverpoint e {
-      bins none = {32'h0000_0000};
-      bins all  = {32'hFFFF_FFFF};
+      bins none = {APB_GPIO_PINS_NONE};
+      bins all  = {APB_GPIO_PINS_ALL};
       bins some = default;
     }
   endgroup
 
   // ---- DATA_OUT activity coverage ----
-  covergroup cg_dout with function sample(bit [31:0] o);
+  covergroup cg_dout with function sample(bit [APB_GPIO_NUM_PINS-1:0] o);
     option.per_instance = 1;
     option.name         = "cg_dout";
     cp_dout : coverpoint o {
-      bins zero     = {32'h0000_0000};
-      bins all_ones = {32'hFFFF_FFFF};
+      bins zero     = {APB_GPIO_PINS_NONE};
+      bins all_ones = {APB_GPIO_PINS_ALL};
       bins mixed    = default;
     }
   endgroup

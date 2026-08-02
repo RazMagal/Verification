@@ -4,7 +4,8 @@
 //   gpio_item     : STIMULUS consumed by the pin driver/sequencer. It mutates the
 //                   driver's shadow of gpio_in with a masked set/clear/toggle or a
 //                   full masked drive, then holds for `hold` clocks. Pin vectors
-//                   are APB_DATA_WIDTH wide (== NPINS, spec: NPINS = DATA_WIDTH).
+//                   are APB_GPIO_NUM_PINS wide - the pin count, which IS the IP's
+//                   DATA_WIDTH (apb_gpio_params.svh).
 //   gpio_mon_item : OBSERVATION emitted by the pin monitor (and predicted by the
 //                   reference model) carrying gpio_out/gpio_oe/irq (and gpio_in
 //                   for reference) plus a posedge cycle stamp for scoreboard
@@ -25,8 +26,8 @@ typedef enum bit [1:0] {
 class gpio_item extends uvm_sequence_item;
 
   rand gpio_op_e                op;
-  rand bit [APB_DATA_WIDTH-1:0] mask;
-  rand bit [APB_DATA_WIDTH-1:0] value;   // used by GPIO_DRIVE
+  rand bit [APB_GPIO_NUM_PINS-1:0] mask;
+  rand bit [APB_GPIO_NUM_PINS-1:0] value;   // used by GPIO_DRIVE
   rand int unsigned             hold;    // clocks to hold after applying (>=1)
 
   constraint c_hold { hold inside {[1:4]}; }
@@ -52,10 +53,10 @@ endclass
 // ---- observation item -------------------------------------------------------
 class gpio_mon_item extends uvm_sequence_item;
 
-  bit [APB_DATA_WIDTH-1:0] gpio_out;
-  bit [APB_DATA_WIDTH-1:0] gpio_oe;
+  bit [APB_GPIO_NUM_PINS-1:0] gpio_out;
+  bit [APB_GPIO_NUM_PINS-1:0] gpio_oe;
   bit                      irq;
-  bit [APB_DATA_WIDTH-1:0] gpio_in;   // informational (raw driven pins)
+  bit [APB_GPIO_NUM_PINS-1:0] gpio_in;   // informational (raw driven pins)
   int unsigned             cyc;       // posedge count since t=0 (for alignment)
   time                     tstamp;
 
