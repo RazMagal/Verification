@@ -24,6 +24,11 @@
 //       and in lock_test a lost lock is a uvm_error).
 //     * register programming: CTRL.EN, STEP.DITHER, STEP.SWEEP (including the
 //       clamp-to-1 zero case), SETTLE, LOCK_CFG.THRESH / MINPOW, pslverr
+//     * WHICH OPTICAL MODEL BACKEND ran (SV / DPI-C / lockstep COMPARE), taken
+//       from ring_model's own report rather than from the config, so a
+//       regression can demonstrate the DPI path was exercised instead of
+//       silently skipped. The two DPI bins are ignore_bins'd in a build without
+//       +define+RING_DPI, where they are structurally unreachable.
 //
 //   NOTE: coverpoint expressions must be integral, so the `real` physics is
 //   mapped to bin INDICES by the helper functions below rather than sampled
@@ -175,9 +180,34 @@ class photonic_ring_tuner_coverage extends uvm_component;
   // ---- the acquisition result : the headline cross -------------------------
   covergroup cg_acq with function sample(int ratio_b, int outcome_b, int res_b,
                                          int fwhm_b, int dith_b, bit det_pos,
-                                         bit laser);
+                                         bit laser, int backend_b);
     option.per_instance = 1;
     option.name         = "cg_acq";
+
+    // WHICH MODEL PRODUCED THIS RESULT. Sampled from ring_model's own report
+    // (ring_if.model_mode_active), not from the config, so a regression can
+    // PROVE the DPI path ran rather than assume it: a build where the C library
+    // failed to link, or a run where +RING_MODEL never reached the model, shows
+    // up here as an empty dpi/compare bin instead of as a quiet green pass.
+    cp_backend : coverpoint backend_b {
+      // -1 = the scoreboard never sampled ring_if out of reset, so NO backend
+      // was observed. It is illegal rather than folded into `sv`, because a run
+      // that observed nothing is not evidence for the SV path -- counting it
+      // there would report coverage the run never earned. illegal_bins also
+      // keeps it out of the denominator, so it cannot become a permanent hole.
+      illegal_bins never_sampled = {-1};
+      bins sv      = {0};   // RING_MODEL_SV      : pure SystemVerilog
+      bins dpi     = {1};   // RING_MODEL_DPI     : the C model closes the loop
+      bins compare = {2};   // RING_MODEL_COMPARE : both, checked every clock
+`ifndef RING_DPI
+      // Structurally unreachable in this build: without +define+RING_DPI there
+      // is no C model, and ring_cfg::resolve_model_mode() turns a request for
+      // either backend into a uvm_fatal. Leaving them in the denominator would
+      // report a permanent coverage hole that no amount of seeds can close --
+      // the same lie-by-omission the x_ratio_outcome ignore_bins avoid.
+      ignore_bins no_dpi_layer_in_this_build = {1, 2};
+`endif
+    }
     cp_ratio : coverpoint ratio_b {
       bins lt1  = {0};   // sampled BEFORE the ring settled -> must not acquire
       bins r1_2 = {1};
@@ -306,11 +336,11 @@ class photonic_ring_tuner_coverage extends uvm_component;
     if (!cov_enable) return;
     cg_acq.sample(ratio_bin(e.ratio), outcome_bin(e), res_bin(e.res_code),
                   fwhm_bin(e.fwhm_code), dither_bin(e.dither_eff, e.fwhm_code),
-                  e.init_detune_pos, e.laser_on);
+                  e.init_detune_pos, e.laser_on, e.model_backend);
     `uvm_info("COV_ACQ", $sformatf(
-      "ratio=%0.3f (bin %0d) outcome=%0d locked=%0b sweep_err=%0b rail_err=%0b acq_cycles=%0d",
+      "ratio=%0.3f (bin %0d) outcome=%0d locked=%0b sweep_err=%0b rail_err=%0b acq_cycles=%0d backend=%0d",
       e.ratio, ratio_bin(e.ratio), outcome_bin(e), e.locked_seen, e.sweep_err,
-      e.rail_err, e.acq_cycles), UVM_LOW)
+      e.rail_err, e.acq_cycles, e.model_backend), UVM_LOW)
   endfunction
 
 endclass

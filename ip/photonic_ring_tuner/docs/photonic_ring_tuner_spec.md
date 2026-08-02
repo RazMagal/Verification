@@ -422,8 +422,10 @@ adc_code = clamp(round(adc_r), 0, 2**ADC_WIDTH - 1)
 
 - `trans` is `1.0` at `d = 0` and `0.5` at `|d| = fwhm_code/2` — a correct Lorentzian
   lineshape, which is what a single ring actually produces at its drop port.
-- `noise` is uniform in `±noise_lsb`, drawn with `$urandom` so runs reproduce from the
-  seed.
+- `noise` is uniform in `±noise_lsb`, drawn with `$urandom_range` so runs reproduce from
+  the seed. The draw stays in SystemVerilog for **both** model backends (§7.7) — the C
+  backend receives the already-drawn sample rather than generating its own, so seed
+  reproducibility is a property of the environment, not of the backend in use.
 - Only **one** resonance is modelled. Real rings have a comb of them spaced by the
   free spectral range, and locking to the wrong comb line is a genuine failure mode —
   it is deliberately **out of scope for v1.0** and noted in §8.
@@ -497,6 +499,76 @@ positive side: a stability check only means something if the lock was actually *
 - `fwhm_code` binned narrow / medium / wide (a high-Q ring is harder to find).
 - `dither_eff` relative to `fwhm_code` (too large a dither cannot resolve the peak).
 - Outcome bins: locked, sweep-error, rail-error, lost-lock.
+
+### 7.7 Model backends (SystemVerilog and DPI-C)
+
+The model specified above has **two interchangeable implementations**. Which one runs is
+a build- and run-time choice; it is not a change to this specification. **§7.2 remains
+the single normative statement of the maths** — every backend implements exactly those
+equations, in that order, on IEEE-754 doubles (a SystemVerilog `real` *is* a double), and
+the equations are not restated anywhere else.
+
+| `ring_if.model_mode` | What evaluates §7.2 |
+|----------------------|---------------------|
+| `RING_MODEL_SV` (0)      | the SystemVerilog model in `dv/optics/ring_model.sv` — **the default**, and the only backend that exists unless the build defines `RING_DPI` |
+| `RING_MODEL_DPI` (1)     | a C model called over **DPI-C** (`common/dpi`); the SV branch is skipped and the loop closes through C |
+| `RING_MODEL_COMPARE` (2) | **both**, in lockstep on identical inputs, checked against each other every clock |
+
+**Why a C backend is normative-worthy at all.** In a real photonic flow the device model
+is owned by the photonics/process team and is delivered as C (or as measured spectra
+behind a C interface), because the same model must also feed circuit-simulator flows,
+characterisation scripts and silicon correlation. Re-implementing it in SystemVerilog
+forks the golden model. This section therefore fixes what a C backend *must* satisfy so
+that swapping it in is a linkage decision rather than a change of physics.
+
+Requirements on any non-SV backend:
+
+1. **Identical operations in identical order.** The quantized `adc_code` MUST match the
+   SystemVerilog model **exactly**, and the pre-quantization reals (`temp`, `d`) MUST
+   agree to within `1e-9 + 1e-12·|ref|` — a tolerance sized only to absorb host-FPU
+   excess precision, not to accommodate a re-derived expression. In particular the
+   thermal lag is evaluated **before** the Lorentzian in the same call, so the `adc_code`
+   returned reflects the `temp` computed on that clock; reordering shifts the loop's phase
+   by one cycle and silently corrupts the `settle_q / tau_cycles` ratio §7.6 is built on.
+2. **Degenerate parameters are clamped, not rejected**, with the same rule the SV model
+   uses (`tau_cycles < 1.0 → 1.0`, `fwhm_code < 1.0 → 1.0`). The SV caller clamps before
+   the call, so both backends are always given the same values.
+3. **Randomness stays on the SystemVerilog side.** The `noise` term of §7.2 MUST be drawn
+   in SystemVerilog with `$urandom_range` and *passed into* the backend, which adds it
+   verbatim and MUST NOT call any RNG of its own. A C-side generator is invisible to
+   `-sv_seed` / `+ntb_random_seed`, so a failing regression could not be replayed from its
+   seed — the one property this environment cannot give up. Exactly one draw happens per
+   post-reset clock in **every** backend, so the RNG stream does not depend on which model
+   is running, and a COMPARE run feeds both models the same sample (two models given
+   different noise disagree for a reason that has nothing to do with either being wrong).
+4. **Events come last, and the crossing event is mandatory.** A backend MUST report a
+   resonance crossing through the exported callback, and MUST commit its state and its
+   output arguments *before* raising it, because the callback runs arbitrary
+   SystemVerilog. The crossing event is required rather than optional because it is the
+   only cheap evidence that a `context` import resolved its scope and that the exported
+   SystemVerilog function was actually reachable — a backend that silently drops every
+   callback is otherwise indistinguishable from a correct one until something depends on
+   an event. The ADC-clip event travels the same channel but is **conditional**: a run
+   whose peak never reaches `adc_max` legitimately never clips, so its absence is
+   informational, not a failure.
+
+**`RING_MODEL_COMPARE` is the equivalence check** — the acceptance criterion for any
+port of this model. It runs both backends on the same inputs every clock and reports the
+first disagreements in full (cycle, all inputs, both sets of outputs) and counts the rest.
+The SV model drives the DUT's loop while the C model is measured against it, so a wrong C
+model shows up as a localized stream of equivalence errors rather than as a garbage
+acquisition. A COMPARE run that compared no cycles, or that raised no
+resonance-crossing callback on stimulus that provably crosses resonance, MUST be treated
+as a failure, not as a pass. Absence of a *clip* callback is a failure only on stimulus
+that provably clips (per item 4).
+
+**The whole DPI layer is optional and MUST remain so.** Every `import "DPI-C"` /
+`export "DPI-C"` declaration lives behind `` `ifdef RING_DPI ``; with the define absent
+the environment has no reference to any C symbol and behaves exactly as it did before the
+layer existed, because the reference runs for this block happen on a browser-hosted
+simulator that cannot compile user C. Requesting backend 1 or 2 in a build without the
+define MUST be a fatal error naming the missing define — never a silent fall-back to
+`RING_MODEL_SV`, which would let an equivalence run pass having never called C.
 
 ---
 

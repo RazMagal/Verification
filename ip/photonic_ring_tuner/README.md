@@ -10,8 +10,9 @@ input is a continuous-valued function of its own output.
 - **Spec (the contract):** [`docs/photonic_ring_tuner_spec.md`](docs/photonic_ring_tuner_spec.md) —
   port list, register map, FSM encoding, the internal signal names the bound SVA
   relies on, and the normative real-number optical model.
-- **Regression list:** [`docs/REGRESSION.md`](docs/REGRESSION.md) — the 10 tests,
-  what each one proves, and how to run them.
+- **Regression list:** [`docs/REGRESSION.md`](docs/REGRESSION.md) — the 11 tests
+  (10 in the default suite, plus a DPI-C model-equivalence test that only exists
+  in a `+define+RING_DPI` build), what each one proves, and how to run them.
 
 ## Why a photonic block is a verification problem at all
 
@@ -120,13 +121,13 @@ The reusable APB protocol checker lives in [`common/apb_vip/apb_protocol_checker
 | File | Role |
 |------|------|
 | `optics/ring_if.sv` | Optical interface: the DUT-facing loop (`dac_code`/`adc_code`/`locked`), the `real` physical configuration, and the `detune_code`/`temp_code` observables, with a preponed monitor clocking block |
-| `optics/ring_model.sv` | The real-number ring model (spec §7.2): thermal lag → Lorentzian → photodiode → ADC. **Non-synthesizable by design**, DV-only |
+| `optics/ring_model.sv` | The real-number ring model (spec §7.2): thermal lag → Lorentzian → photodiode → ADC. **Non-synthesizable by design**, DV-only. Also hosts the optional DPI-C backend switch (below) |
 | `photonic_ring_tuner_reg_block.svh` | RAL model (`CTRL`/`STEP`/`SETTLE`/`LOCK_CFG` RW, `STATUS` per-field mixed, `DAC`/`PD` RO+volatile) |
 | `photonic_ring_tuner_env_cfg.svh` | Env config plus `ring_cfg` — the randomizable *physics*, with one constraint regime per test outcome, and the single acquisition-deadline formula |
 | `photonic_ring_tuner_scoreboard.svh` | The five spec-§7.5 closed-loop checks: acquisition inside a derived deadline, accuracy against the model's `detune_code`, stability of `dac_code` while locked, no false lock on a dark ring, saturation-without-wrap at the rail |
 | `photonic_ring_tuner_coverage.svh` | Functional coverage (spec §7.6), built around the settle/tau × lock-outcome cross |
 | `photonic_ring_tuner_env.svh` | Env assembly: reused APB agent, explicit `uvm_reg_predictor`, scoreboard, coverage |
-| `seq/photonic_ring_tuner_vseq_lib.svh` | Virtual sequences (smoke / reg / lock / settle_short / dark / rail / error / ratio / rail_w1c_race / lock_loss) |
+| `seq/photonic_ring_tuner_vseq_lib.svh` | Virtual sequences (smoke / reg / lock / settle_short / dark / rail / error / ratio / rail_w1c_race / lock_loss / dpi_equiv) |
 | `test/photonic_ring_tuner_test_lib.svh` | Test library — a derived test overrides the ring regime, the expected outcome, and the vseq |
 | `photonic_ring_tuner_pkg.sv` | Compilation package (imports the reused `apb_vip_pkg`) |
 
@@ -152,6 +153,56 @@ has thermally settled and the loop walks the wrong way and never acquires. The
 cross is deliberately left complete — the `(ratio < 1, locked)` cell is exactly
 the cell whose appearance would be a finding, so it is not hidden behind an
 `ignore_bins`.
+
+## The optical model has a second backend, in C (`+define+RING_DPI`)
+
+Spec §7.2 is implemented twice: once in SystemVerilog (`dv/optics/ring_model.sv`)
+and once in C ([`common/dpi`](../../common/dpi), reached over **DPI-C**).
+`ring_model` switches between them:
+
+| `ring_model_e` | What evaluates the physics |
+|---|---|
+| `RING_MODEL_SV` | the SystemVerilog model — **the default for every test in the suite** |
+| `RING_MODEL_DPI` | the C model closes the loop; the SV branch is skipped |
+| `RING_MODEL_COMPARE` | both, every clock, on identical inputs, checked against each other |
+
+**Why the physics belongs in C.** This is how photonic ICs are actually verified,
+not a demonstration of DPI for its own sake. The device model is owned by the
+photonics/process team and ships as C — the same code that backs their circuit
+simulator flows and their silicon correlation — and it feeds a standalone C
+regression, a characterisation script and the link-budget work as well as the
+testbench. Rewriting it in SystemVerilog forks the golden model. DV's job is to
+*link* to it, and DPI is that bridge. The natural v2 items in [spec §8](docs/photonic_ring_tuner_spec.md#8-out-of-scope-for-v10) —
+an FSR comb, thermal crosstalk between rings, laser drift — are lookup tables and
+interpolation, which C does well and event-driven `real` arithmetic does not.
+
+**The `RING_DPI` guard means the default build has zero DPI dependency.** Every
+`import "DPI-C"` / `export "DPI-C"` and every DPI call in this repository sits
+inside `` `ifdef RING_DPI ``. Without the define, `photonics_dpi_pkg` compiles to
+an **empty package**, no C symbol is referenced, no shared library is
+linked, and `ring_model` has exactly the dependencies it had before the layer
+existed — which matters because these UVM runs happen on EDA Playground, which
+will not compile user C. Asking for the DPI or COMPARE backend in such a build is
+a `UVM_FATAL` naming the missing define, never a silent fall-back: a "DPI
+equivalence" run that quietly compared the SV model with itself is the most
+expensive kind of green run there is.
+
+**Both directions are exercised.** `import "DPI-C"` for the model calls, and
+`export "DPI-C"` for `sv_ring_event`, which the C model calls *back into*
+SystemVerilog to report a resonance crossing or an ADC clip. That callback is why
+`photonics_ring_step` must be imported **`context`** — an exported function
+belongs to a SystemVerilog scope, and only a `context` import carries the scope
+the simulator needs to resolve it; a plain import lets the tool drop the
+bookkeeping and the callback fails at run time, far from its cause. The
+`ring_dpi_*` wrappers exist so every call site is lexically inside the package
+that owns the export.
+
+`photonic_ring_tuner_dpi_equiv_test` (`RING_MODEL_COMPARE`) is the acceptance
+test for the port; the noise draw stays in SystemVerilog so both backends see the
+same sample and the run replays from its seed. Details, the frozen ABI and the
+per-simulator linkage are in [`sim/README.md`](sim/README.md#optional-dpi-c-reference-model-definering_dpi--off-by-default)
+and [`common/dpi/README.md`](../../common/dpi/README.md). The C model's own unit
+tests need **`gcc` only, no simulator** (`make -C common/dpi test`).
 
 ## Scope (v1.0)
 

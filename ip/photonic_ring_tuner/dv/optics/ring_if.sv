@@ -67,9 +67,34 @@ interface ring_if #(parameter int DAC_WIDTH = `TUNER_DAC_W,
   real noise_lsb  = 0.0;      // uniform ADC noise amplitude, absolute LSBs
   bit  laser_on   = 1'b1;     // 0 => trans forced to 0 (dark fibre)
 
+  // Which BACKEND ring_model should evaluate the physics with. Encoded as a
+  // plain int rather than an enum so the interface stays independent of the DV
+  // package (a `virtual ring_if` handle is unparameterized and this file
+  // compiles at $unit, before any package):
+  //     0 = RING_MODEL_SV       pure SystemVerilog        (the default)
+  //     1 = RING_MODEL_DPI      the DPI-C model only
+  //     2 = RING_MODEL_COMPARE  both, in lockstep, checked against each other
+  // The encoding is the base of ring_cfg::ring_model_e (see env_cfg), and
+  // ring_cfg::apply() is what drives it. 1 and 2 require +define+RING_DPI;
+  // asking for them without it is a fatal, never a silent fallback to 0.
+  int  model_mode =      0;
+
   // ---- 3) Observables (spec 7.4, driven by ring_model) ---------------------
   real detune_code = 0.0;    // live d = temp - res_code, DAC codes
   real temp_code   = 0.0;    // live thermal state, DAC codes
+
+  // The backend ring_model ACTUALLY ran, as reported by the model itself rather
+  // than as requested by the config -- that distinction is the whole point:
+  // functional coverage samples this one, so a regression can prove the DPI path
+  // was exercised instead of having been quietly skipped. Plus the running
+  // tally of the RING_MODEL_COMPARE equivalence check, so a test can insist the
+  // comparison actually compared something (a lockstep check that ran on zero
+  // cycles passes vacuously) and that none of those cycles disagreed. All three
+  // exist in EVERY build: without RING_DPI they simply stay 0, which keeps the
+  // interface, its clocking block and its modports identical either way.
+  int  model_mode_active    = 0;
+  int  equiv_cmp_count      = 0;
+  int  equiv_mismatch_count = 0;
 
   // Passive, preponed sampling for the scoreboard / coverage.
   clocking mon_cb @(posedge clk);
@@ -77,14 +102,20 @@ interface ring_if #(parameter int DAC_WIDTH = `TUNER_DAC_W,
     input dac_code, adc_code, locked;
     input detune_code, temp_code;
     input res_code, fwhm_code, tau_cycles, p_peak_lsb, noise_lsb, laser_on;
+    input model_mode, model_mode_active;
+    input equiv_cmp_count, equiv_mismatch_count;
   endclocking
 
   // The optical model's view: reads the DAC + the physics, drives the ADC + the
-  // observables.
+  // observables. equiv_* are OUTPUTS here (the model publishes its own tallies)
+  // and the model keeps local copies to increment, exactly as it already does
+  // for temp/temp_code -- a modport output may be written, not read back.
   modport model_mp (input  clk, rst_n, dac_code,
                     input  res_code, fwhm_code, tau_cycles, p_peak_lsb,
-                           noise_lsb, laser_on,
-                    output adc_code, detune_code, temp_code);
+                           noise_lsb, laser_on, model_mode,
+                    output adc_code, detune_code, temp_code,
+                           model_mode_active, equiv_cmp_count,
+                           equiv_mismatch_count);
 
   // The DV's view.
   modport mon_mp (clocking mon_cb, input rst_n,

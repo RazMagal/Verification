@@ -11,6 +11,8 @@ so each directory maps to a recognizable deliverable.
 ```
 verification/
 ├── common/apb_vip/        Reusable APB3 master UVM VIP (agent + RAL adapter + coverage + SVA)
+├── common/dpi/            OPTIONAL DPI-C layer: the ring's optical model in C + its SV ABI package
+│                          (photonics_dpi.{h,c}, photonics_dpi_pkg.sv, gcc-only unit tests)
 ├── ip/apb_timer/          IP #1: a programmable timer — RTL, full UVM env, docs, sim
 │   ├── rtl/               apb_timer.sv + bindable SVA
 │   ├── dv/                UVM env: RAL, reference-model scoreboard, coverage, IRQ agent, vseqs, tests
@@ -181,7 +183,8 @@ verification strategy in three places:
    │        sampling ring_if once per posedge through a preponed clocking block)
    └── photonic_ring_tuner_coverage   (register programming + the acquisition result)
    (no optical agent — ring_cfg CONFIGURES ring_if and the physics is the stimulus)
-   + tb-side: ring_model (real-number optics, DV-only, NON-synthesizable)
+   + tb-side: ring_model (real-number optics, DV-only, NON-synthesizable;
+              optional DPI-C backend behind +define+RING_DPI — see below)
    + bound SVA: apb_protocol_checker (APB compliance) and photonic_ring_tuner_sva
      (locked/port equality, no DAC wraparound, no lock without power, sticky error
       flags, probe polarity, SETTLE honoured)
@@ -196,6 +199,58 @@ one whose appearance would be a finding.
 v1.0 models a single resonance. Free-spectral-range / wrong-peak lock, thermal crosstalk,
 laser drift and PID control are explicitly out of scope (spec §8), so the boundary is a
 design decision rather than an oversight.
+
+### `common/dpi` — the optical model's second backend, in C
+
+`common/apb_vip` is the layer shared *horizontally* across the three IPs; `common/dpi` is
+a different kind of shared layer — the boundary between the digital testbench and a
+device model owned by somebody else. Spec §7.2 is implemented twice, once in
+SystemVerilog and once in C, and `ring_model` selects which one runs:
+
+```
+   common/dpi/photonics_dpi.{h,c}      the ring/photodiode/ADC model in C (+ gcc-only tests)
+   common/dpi/photonics_dpi_pkg.sv     the SV half of the frozen ABI: the imports, the
+                                       export, and the ring_dpi_* wrappers
+        │
+        ▼   import "DPI-C" context ─────────────▶ photonics_ring_step()
+   ring_model ──┬── RING_MODEL_SV       the SystemVerilog physics (THE DEFAULT)
+                ├── RING_MODEL_DPI      the C model closes the loop
+                └── RING_MODEL_COMPARE  both in lockstep, checked every clock
+        ▲   export "DPI-C" ◀───────────────────── sv_ring_event() (C calls back into SV)
+```
+
+Why the physics belongs in C is a statement about how photonic ICs are verified, not
+about DPI: the device model is owned by the photonics/process team and ships as C — the
+same code behind their circuit-simulator flows and their silicon correlation — and it
+feeds a standalone C regression and characterisation work as well as this testbench.
+Re-writing it in SystemVerilog forks the golden model; DV's job is to *link* to it.
+
+Three things shape the layer:
+
+- **A compile guard, so the default flow is unchanged.** Every `import "DPI-C"` /
+  `export "DPI-C"` sits inside `` `ifdef RING_DPI ``. With the define absent the package
+  compiles to an empty package, no C symbol is referenced and no shared library
+  is linked — necessary because these UVM runs happen on EDA Playground, which cannot
+  compile user C. Selecting the DPI or COMPARE backend in such a build is a `UVM_FATAL`
+  naming the define, never a silent fall-back to the SV model.
+- **Both directions, and the `context` gotcha.** The C model calls back into
+  SystemVerilog through the exported `sv_ring_event` (resonance crossed, ADC clipped),
+  which is why `photonics_ring_step` must be imported **`context`**: an exported function
+  belongs to an SV *scope*, and only a `context` import carries the scope the simulator
+  needs to resolve the callback. A plain import fails at run time, far from its cause.
+- **The RNG stays on the SystemVerilog side.** The noise sample is drawn with
+  `$urandom_range` and *passed into* the C model, which must add it verbatim. A C-side
+  `rand()` is invisible to `-sv_seed` / `+ntb_random_seed`, so a failing run could not be
+  replayed — and in COMPARE, two models fed different noise disagree for a reason that
+  has nothing to do with either being wrong.
+
+`RING_MODEL_COMPARE` is the equivalence check, and the shape of the real task: the C
+model is a **suspect, not a reference**. The SV model drives the loop while the C model
+is evaluated on every one of the same clocks, so a broken C model produces a localized
+stream of `RING_DPI_EQUIV` errors naming the first failing cycle and its inputs, rather
+than a garbage acquisition whose cause is three abstraction layers away. See
+[`common/dpi/README.md`](../common/dpi/README.md) for the frozen ABI and the per-vendor
+linkage, which is the one genuinely non-portable part of the flow.
 
 ## The larger design — `apb_subsystem`
 
@@ -224,3 +279,9 @@ Xcelium; Riviera-PRO needs no EDA Playground account validation) — see each
 IP's `sim/README.md` for the exact compile order, `Makefile` targets, and
 **EDA Playground** setup (which files go in the Design vs Testbench panes, the
 UVM version, and the `+UVM_TESTNAME=...` run command).
+
+`common/dpi` is the one part that runs with **no simulator at all**:
+`make -C common/dpi test` builds the C model and its unit tests with `gcc` and
+reports 98 checks in 11 sections. The DPI-*linked* UVM flow (`+define+RING_DPI`,
+the `*_dpi` targets in `ip/photonic_ring_tuner/sim/Makefile`) still needs a
+simulator that can compile user C, which EDA Playground cannot — hence the guard.

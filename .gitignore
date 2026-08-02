@@ -30,3 +30,10 @@ urgReport/
 *.ucdb
 *.vdb
 cov_work/
+
+# DPI-C build artifacts (common/dpi) — `make clean` removes these, but they are
+# easy to stage accidentally since the C sources live beside them.
+*.so
+*.o
+common/dpi/test/test_photonics_dpi
+common/dpi/build/

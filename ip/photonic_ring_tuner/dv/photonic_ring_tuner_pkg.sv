@@ -3,6 +3,13 @@
 //   Compile AFTER apb_vip_pkg (imported below) and AFTER the interfaces
 //   (apb_if.sv, ring_if.sv) which live at $unit, not in a package.
 //   Includes are in strict dependency order.
+//
+//   With +define+RING_DPI this package additionally imports photonics_dpi_pkg
+//   (common/dpi), which must therefore compile BEFORE it -- see sim/run.f.
+//   WITHOUT the define nothing here references it at all, so the default flow
+//   has no dependency on common/dpi and none on any C library: that is what
+//   keeps this environment runnable on EDA Playground, which cannot compile
+//   user C. Default flow = no define = pure SystemVerilog.
 // -----------------------------------------------------------------------------
 package photonic_ring_tuner_pkg;
 
@@ -18,6 +25,13 @@ package photonic_ring_tuner_pkg;
   // import because TUNER_ADDR_WIDTH is taken from APB_ADDR_WIDTH rather than
   // stated a second time.
   `include "photonic_ring_tuner_params.svh"
+
+`ifdef RING_DPI
+  // Needed only by the DPI equivalence vseq/test (version string + the
+  // sv_ring_event callback tallies). Imported, not wildcard-exported, so the
+  // DPI names stay explicitly qualified at their few use sites.
+  import photonics_dpi_pkg::*;
+`endif
 
   // RAL + config (env_cfg defines ring_cfg and the mode/outcome enums)
   `include "photonic_ring_tuner_reg_block.svh"

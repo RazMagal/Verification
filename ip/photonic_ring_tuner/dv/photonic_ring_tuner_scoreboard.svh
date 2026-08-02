@@ -77,6 +77,12 @@ class photonic_ring_tuner_acq_item extends uvm_sequence_item;
   int unsigned settle_prog;    // SETTLE as programmed for this acquisition
   int unsigned dither_eff;     // effective dither step (0 -> 1)
   int unsigned acq_cycles;     // EN rise -> locked, 0 if never acquired
+  int          model_backend;  // ring_model's OWN report of which backend ran
+                               // (ring_model_e: 0 sv / 1 dpi / 2 compare), or
+                               // -1 if the optical interface was never sampled
+                               // out of reset -- NOT folded into `sv`, see
+                               // extract_phase and cg_acq.cp_backend
+                               // (illegal_bins never_sampled)
   real         tau_cycles;
   real         ratio;          // settle_prog / tau_cycles  (spec 7.3)
   real         res_code;
@@ -92,6 +98,7 @@ class photonic_ring_tuner_acq_item extends uvm_sequence_item;
     `uvm_field_int(settle_prog, UVM_ALL_ON | UVM_DEC)
     `uvm_field_int(dither_eff,  UVM_ALL_ON | UVM_DEC)
     `uvm_field_int(acq_cycles,  UVM_ALL_ON | UVM_DEC)
+    `uvm_field_int(model_backend, UVM_ALL_ON | UVM_DEC)
   `uvm_object_utils_end
 
   function new(string name = "photonic_ring_tuner_acq_item");
@@ -186,6 +193,17 @@ class photonic_ring_tuner_scoreboard extends uvm_scoreboard;
   bit          dac_prev_valid;
   bit          dac_hit_max;
   int unsigned n_big_jumps;
+
+  // ---- which model backend actually ran, per ring_model's OWN report -------
+  // Sampled from ring_if rather than read out of the config: the config records
+  // what was ASKED for, and the whole point of the coverpoint fed from here is
+  // to show that the DPI path really ran instead of having been skipped.
+  // equiv_* are ring_model's RING_MODEL_COMPARE tallies (0 in the other
+  // backends); a lockstep comparison that compared nothing passes vacuously, so
+  // the count is checked, not just the mismatches.
+  int          backend_seen = -1;
+  int          equiv_cmp_seen;
+  int          equiv_mismatch_seen;
 
   // failure latches (each check reports ONCE, then counts)
   bit          accuracy_fail;
@@ -343,6 +361,10 @@ class photonic_ring_tuner_scoreboard extends uvm_scoreboard;
         cyc++;
         continue;
       end
+
+      backend_seen        = ring_vif.mon_cb.model_mode_active;
+      equiv_cmp_seen      = ring_vif.mon_cb.equiv_cmp_count;
+      equiv_mismatch_seen = ring_vif.mon_cb.equiv_mismatch_count;
 
       lk    = ring_vif.mon_cb.locked;
       dac   = int'(ring_vif.mon_cb.dac_code);
@@ -523,6 +545,14 @@ class photonic_ring_tuner_scoreboard extends uvm_scoreboard;
     it.fwhm_code   = (m_cfg.m_ring_cfg != null) ? m_cfg.m_ring_cfg.fwhm_code  : 1.0;
     it.ratio       = real'(settle_prog) / ((it.tau_cycles < 1.0) ? 1.0 : it.tau_cycles);
     it.init_detune_pos = (det_at_en >= 0.0);
+    // -1 = the optical interface was NEVER SAMPLED out of reset, and it is
+    // published as -1 on purpose. Substituting RING_MODEL_SV here would have
+    // been a small lie with a large consequence: a run that observed no backend
+    // at all would be counted into cp_backend's `sv` bin, so a broken run would
+    // read as coverage of the SV path. cg_acq.cp_backend catches -1 in an
+    // illegal_bins instead, which makes a skipped run VISIBLE rather than
+    // silently miscounted, and keeps it out of the coverage denominator.
+    it.model_backend   = backend_seen;
     acq_ap.write(it);
   endfunction
 
@@ -568,6 +598,39 @@ class photonic_ring_tuner_scoreboard extends uvm_scoreboard;
     end
   endfunction
 
+  // ---- which model ran, and (in COMPARE) did the two agree? ----------------
+  // Reported for EVERY run, so a log always says which physics produced the
+  // waveform. Three separate failures, because they are three different bugs:
+  //   * the model ran a backend nobody asked for  -> the plumbing is broken;
+  //   * COMPARE compared zero cycles              -> a vacuous green run, the
+  //     exact failure mode an equivalence test exists to avoid;
+  //   * COMPARE found disagreements               -> the summary of the
+  //     per-cycle RING_DPI_EQUIV errors ring_model already reported (it reports
+  //     the first few in full and counts the rest, so this is where the TOTAL
+  //     becomes a verdict).
+  function void check_model_backend();
+    ring_model_e want = (m_cfg.m_ring_cfg != null) ? m_cfg.m_ring_cfg.model_mode
+                                                   : RING_MODEL_SV;
+    `uvm_info("SCB_BACKEND", $sformatf(
+      "optical backend: requested %s, ring_model reported %0d | compare: %0d cycles checked, %0d mismatched",
+      want.name(), backend_seen, equiv_cmp_seen, equiv_mismatch_seen), UVM_LOW)
+
+    if ((backend_seen >= 0) && (backend_seen != int'(want)))
+      `uvm_error("SCB_BACKEND", $sformatf(
+        "ring_model ran backend %0d but the configuration selected %s (%0d) - the mode never reached the model",
+        backend_seen, want.name(), int'(want)))
+
+    if (backend_seen == int'(RING_MODEL_COMPARE)) begin
+      if (equiv_cmp_seen == 0)
+        `uvm_error("SCB_EQUIV_VACUOUS",
+                   "RING_MODEL_COMPARE ran but compared ZERO cycles - the SV/DPI equivalence result is vacuous")
+      if (equiv_mismatch_seen != 0)
+        `uvm_error("SCB_EQUIV", $sformatf(
+          "the SV and DPI models disagreed on %0d of %0d compared cycles (see the RING_DPI_EQUIV errors for the first ones, with inputs)",
+          equiv_mismatch_seen, equiv_cmp_seen))
+    end
+  endfunction
+
   // ---- verdict -------------------------------------------------------------
   function void check_phase(uvm_phase phase);
     apb_seq_item leftover;
@@ -591,6 +654,8 @@ class photonic_ring_tuner_scoreboard extends uvm_scoreboard;
     if ((cyc == 0) || (n_apb == 0))
       `uvm_error("SCB_NO_ACTIVITY",
                  "scoreboard saw no clocked activity or no APB traffic (no-activity guard)")
+
+    check_model_backend();
 
     case (m_cfg.exp_outcome)
       // ---- CHECK 1/2/3 ----------------------------------------------------

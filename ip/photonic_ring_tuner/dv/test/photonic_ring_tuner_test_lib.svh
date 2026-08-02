@@ -47,6 +47,15 @@ class photonic_ring_tuner_base_test extends uvm_test;
     return RING_EXP_NONE;
   endfunction
 
+  // WHICH IMPLEMENTATION of the optical physics evaluates that regime. Every
+  // existing test leaves this at RING_MODEL_SV, so the default flow is
+  // unchanged and needs no C, no +define+RING_DPI and no shared library --
+  // which is what keeps this suite runnable on EDA Playground. Overridden only
+  // by photonic_ring_tuner_dpi_equiv_test, and by +RING_MODEL on any test.
+  virtual function ring_model_e ring_model_mode();
+    return RING_MODEL_SV;
+  endfunction
+
   function void build_phase(uvm_phase phase);
     super.build_phase(phase);
 
@@ -68,8 +77,9 @@ class photonic_ring_tuner_base_test extends uvm_test;
 
     // ---- the optical stimulus : randomized here, so it is reproducible from
     //      the UVM seed and printed in the log before anything runs ----
-    m_ring_cfg      = ring_cfg::type_id::create("m_ring_cfg");
-    m_ring_cfg.mode = ring_mode();
+    m_ring_cfg            = ring_cfg::type_id::create("m_ring_cfg");
+    m_ring_cfg.mode       = ring_mode();
+    m_ring_cfg.model_mode = ring_model_mode();
     if (!m_ring_cfg.randomize())
       `uvm_fatal("TEST_RAND", $sformatf("ring_cfg randomize failed for mode %s",
                  ring_mode().name()))
@@ -95,9 +105,17 @@ class photonic_ring_tuner_base_test extends uvm_test;
   // Put the physics onto the model before reset is released.
   function void start_of_simulation_phase(uvm_phase phase);
     super.start_of_simulation_phase(phase);
+    // apply() also RESOLVES the model backend (+RING_MODEL beats the test's
+    // choice) and writes it onto ring_if, so the line below reports what will
+    // actually run rather than what was requested.
     m_ring_cfg.apply(ring_vif);
     `uvm_info("TEST_RING", $sformatf("ring under test -> %s | expecting %s",
               m_ring_cfg.convert2string(), exp_outcome().name()), UVM_LOW)
+`ifdef RING_DPI
+    `uvm_info("TEST_DPI", $sformatf(
+      "DPI layer compiled in (+define+RING_DPI); C model reports version \"%s\"",
+      photonics_dpi_pkg::ring_dpi_version()), UVM_LOW)
+`endif
   endfunction
 
   // Wire + run a vseq with objection + drain.
@@ -300,6 +318,46 @@ class photonic_ring_tuner_ratio_test extends photonic_ring_tuner_base_test;
         photonic_ring_tuner_ratio_vseq::type_id::create("s");
     if (!s.randomize())
       `uvm_error("TEST", "ratio vseq randomize failed")
+    start_vseq(s, phase);
+  endtask
+endclass
+
+// ---------------------------------------------------------------------------
+// SV vs DPI-C MODEL EQUIVALENCE : the deliverable of the DPI layer.
+//
+//   Runs a full acquisition (plus a directed corner walk) with the optical model
+//   in RING_MODEL_COMPARE, i.e. with the SystemVerilog reference model and the C
+//   model behind common/dpi evaluated in LOCKSTEP on identical inputs -- same
+//   dac_code, same clamped tau/fwhm, and the same $urandom noise sample, drawn
+//   in SystemVerilog and passed into photonics_ring_step so the run stays
+//   reproducible from its seed and the comparison stays meaningful. Both are
+//   IEEE-754 doubles doing the same operations in the same order, so the
+//   quantized adc_code must agree EXACTLY; ring_model reports any disagreement
+//   as a RING_DPI_EQUIV uvm_error naming the cycle, the inputs and both outputs.
+//
+//   REQUIRES +define+RING_DPI. Without it there is no C model to compare
+//   against, and ring_cfg::resolve_model_mode() ends the run with a uvm_fatal
+//   naming the missing define -- deliberately, because an "equivalence test"
+//   that quietly fell back to comparing the SV model with itself would be the
+//   most expensive kind of green run there is.
+//
+//     make -C ip/photonic_ring_tuner/sim questa_dpi   # or vcs_dpi / xrun_dpi
+//     make -C ip/photonic_ring_tuner/sim regress_dpi  # the equivalence x seeds
+class photonic_ring_tuner_dpi_equiv_test extends photonic_ring_tuner_base_test;
+  `uvm_component_utils(photonic_ring_tuner_dpi_equiv_test)
+  function new(string name = "photonic_ring_tuner_dpi_equiv_test",
+               uvm_component parent = null);
+    super.new(name, parent);
+  endfunction
+  // A LOCKABLE ring, so the equivalence is measured on a loop that really
+  // acquires: an equivalence run over a dead ring would compare two models that
+  // both sat still.
+  virtual function ring_mode_e  ring_mode();       return RING_MODE_LOCKABLE;  endfunction
+  virtual function ring_exp_e   exp_outcome();     return RING_EXP_LOCK;       endfunction
+  virtual function ring_model_e ring_model_mode(); return RING_MODEL_COMPARE;  endfunction
+  task run_phase(uvm_phase phase);
+    photonic_ring_tuner_dpi_equiv_vseq s =
+        photonic_ring_tuner_dpi_equiv_vseq::type_id::create("s");
     start_vseq(s, phase);
   endtask
 endclass

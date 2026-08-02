@@ -29,6 +29,24 @@ typedef enum {
   RING_MODE_RAIL           // resonance beyond DAC_MAX  -> RAIL_ERR, never locks
 } ring_mode_e;
 
+// Which implementation of the optical physics ring_model should evaluate.
+//
+//   RING_MODEL_SV       pure SystemVerilog -- THE DEFAULT, and the only backend
+//                       that exists unless the build carries +define+RING_DPI.
+//   RING_MODEL_DPI      the C model behind common/dpi (photonics_dpi_pkg).
+//   RING_MODEL_COMPARE  both, in lockstep on identical inputs, checked against
+//                       each other every clock -- see the equivalence test.
+//
+// The values are pinned to 0/1/2 because ring_if carries the mode as a plain
+// `int` (it compiles at $unit, before this package exists, and a `virtual
+// ring_if` handle is unparameterized), and ring_model decodes those same three
+// integers with its own localparams. Change one, change all three.
+typedef enum int {
+  RING_MODEL_SV      = 0,
+  RING_MODEL_DPI     = 1,
+  RING_MODEL_COMPARE = 2
+} ring_model_e;
+
 // What the scoreboard must prove about this run (spec 7.5).
 typedef enum {
   RING_EXP_NONE,           // no optical outcome asserted (register-only tests)
@@ -66,6 +84,11 @@ class ring_cfg extends uvm_object;
   // Regime selector (NOT rand: the test picks it, the constraints follow).
   ring_mode_e  mode = RING_MODE_LOCKABLE;
 
+  // Which model backend evaluates that regime (NOT rand either: a backend is a
+  // property of the RUN, not of the physics). The test sets it; +RING_MODEL
+  // overrides it; resolve_model_mode() is the single place that decides.
+  ring_model_e model_mode = RING_MODEL_SV;
+
   // ---- randomized integer knobs -------------------------------------------
   rand int res_code_i;    // resonance position in DAC codes (may exceed dac_max)
   rand int fwhm_code_i;   // linewidth, DAC codes
@@ -82,7 +105,8 @@ class ring_cfg extends uvm_object;
   real noise_lsb;
 
   `uvm_object_utils_begin(ring_cfg)
-    `uvm_field_enum(ring_mode_e, mode, UVM_ALL_ON)
+    `uvm_field_enum(ring_mode_e,  mode,       UVM_ALL_ON)
+    `uvm_field_enum(ring_model_e, model_mode, UVM_ALL_ON)
     `uvm_field_int (res_code_i,  UVM_ALL_ON | UVM_DEC)
     `uvm_field_int (fwhm_code_i, UVM_ALL_ON | UVM_DEC)
     `uvm_field_int (tau_x10,     UVM_ALL_ON | UVM_DEC)
@@ -245,6 +269,43 @@ class ring_cfg extends uvm_object;
     update_reals();
   endfunction
 
+  // ---- backend selection (spec-independent: this is a DV knob) -------------
+  // ONE place decides which model runs, so the fatal below, the coverage
+  // sample, the log line and what ring_model actually does can never disagree.
+  //
+  // Precedence: +RING_MODEL=sv|dpi|compare beats the value the test set, so a
+  // whole regression can be re-run against the C model without editing a test.
+  // An unrecognised value is a fatal, not a fallback -- silently running the SV
+  // model because someone typo'd "compair" would produce a green "equivalence"
+  // run that never called C, which is strictly worse than not running at all.
+  //
+  // Same reasoning for the RING_DPI guard: without the define there is no C to
+  // call, and the failure names the missing define instead of pretending.
+  function ring_model_e resolve_model_mode();
+    string       s;
+    ring_model_e m;
+    m = model_mode;
+    if ($value$plusargs("RING_MODEL=%s", s)) begin
+      case (s)
+        "sv",      "SV":      m = RING_MODEL_SV;
+        "dpi",     "DPI":     m = RING_MODEL_DPI;
+        "compare", "COMPARE": m = RING_MODEL_COMPARE;
+        default: `uvm_fatal("RING_MODEL", $sformatf(
+          "+RING_MODEL=%s is not one of sv|dpi|compare", s))
+      endcase
+    end
+`ifndef RING_DPI
+    if (m != RING_MODEL_SV)
+      `uvm_fatal("RING_MODEL_NO_DPI", $sformatf(
+        {"%s was requested but this build has no DPI layer: it was compiled ",
+         "without +define+RING_DPI, so common/dpi/photonics_dpi_pkg.sv declares ",
+         "no import \"DPI-C\" and there is no C model to call. Rebuild with ",
+         "+define+RING_DPI (see ip/photonic_ring_tuner/sim/Makefile: the *_dpi ",
+         "targets) or run with +RING_MODEL=sv."}, m.name()))
+`endif
+    return m;
+  endfunction
+
   // Push the physics onto the model's interface. Called before reset is
   // released (and again by a vseq that changes the ring mid-test).
   function void apply(virtual ring_if vif);
@@ -255,6 +316,13 @@ class ring_cfg extends uvm_object;
     vif.p_peak_lsb = p_peak_lsb;
     vif.noise_lsb  = noise_lsb;
     vif.laser_on   = laser_on;
+    // Resolve here and write the resolved value BACK, so everything downstream
+    // (the log, the coverage sample, the scoreboard) sees what will actually run
+    // rather than what was asked for. ring_model latches it while reset is still
+    // asserted, and apply() runs in start_of_simulation_phase, i.e. at time 0,
+    // before the first posedge.
+    model_mode     = resolve_model_mode();
+    vif.model_mode = int'(model_mode);
   endfunction
 
   // settle_q / tau_cycles -- the ONLY thing the controller can observe about
@@ -265,9 +333,9 @@ class ring_cfg extends uvm_object;
 
   function string convert2string();
     return $sformatf(
-      "%s: res=%0.1f fwhm=%0.1f tau=%0.1f p_peak=%0.1f noise=%0.1f laser=%0b",
+      "%s: res=%0.1f fwhm=%0.1f tau=%0.1f p_peak=%0.1f noise=%0.1f laser=%0b backend=%s",
       mode.name(), res_code, fwhm_code, tau_cycles, p_peak_lsb, noise_lsb,
-      laser_on);
+      laser_on, model_mode.name());
   endfunction
 
 endclass

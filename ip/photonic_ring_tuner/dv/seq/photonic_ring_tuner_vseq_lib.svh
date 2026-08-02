@@ -21,6 +21,7 @@
 //     photonic_ring_tuner_rail_w1c_race_vseq - W1C vs HW-set race on RAIL_ERR
 //     photonic_ring_tuner_error_vseq         - unmapped/unaligned/RO accesses
 //     photonic_ring_tuner_ratio_vseq         - sweeps SETTLE/tau for coverage
+//     photonic_ring_tuner_dpi_equiv_vseq     - SV vs DPI-C model equivalence
 // -----------------------------------------------------------------------------
 `ifndef PHOTONIC_RING_TUNER_VSEQ_LIB_SVH
 `define PHOTONIC_RING_TUNER_VSEQ_LIB_SVH
@@ -1005,6 +1006,240 @@ class photonic_ring_tuner_ratio_vseq extends photonic_ring_tuner_base_vseq;
               d, locked_now()), UVM_LOW)
     disable_loop();
     wait_cycles(16);
+  endtask
+endclass
+
+// ---------------------------------------------------------------------------
+// SV vs DPI-C MODEL EQUIVALENCE (RING_MODEL_COMPARE) -- the point of the whole
+//   DPI layer, and the shape of a job you actually get asked to do: a vendor
+//   hands you a C model of their photonics and you have to decide whether to
+//   trust it against a reference you already believe.
+//
+//   ring_model does the per-clock work: in RING_MODEL_COMPARE it evaluates BOTH
+//   implementations on IDENTICAL inputs -- same dac_code, same clamped tau and
+//   fwhm, and crucially the SAME $urandom noise sample, drawn once in
+//   SystemVerilog and passed into photonics_ring_step -- and reports any
+//   disagreement as a RING_DPI_EQUIV uvm_error naming the cycle, every input and
+//   both sets of outputs. The quantized adc_code must match EXACTLY; the
+//   pre-quantization reals are compared with a tolerance tight enough (1e-9 +
+//   1e-12*|ref|) to catch a re-derived formula while tolerating host FPU excess
+//   precision.
+//
+//   THIS SEQUENCE'S JOB IS TO MAKE THAT CHECK MEAN SOMETHING, in two parts:
+//
+//   1) A FULL ACQUISITION. The closed loop is the only stimulus that drives the
+//      model the way the DUT will: a cold coarse sweep across the whole DAC
+//      range (detuning from -res_code up through zero and out the other side,
+//      i.e. the entire Lorentzian), then the fine dither loop parked on
+//      resonance where the lineshape is flattest and rounding is most likely to
+//      split the two models by one LSB. Same register programming as lock_vseq,
+//      so this is also a genuine RING_EXP_LOCK run: the loop must still acquire,
+//      hold and re-acquire, which proves the compared model is not just
+//      self-consistent but still closes the loop.
+//
+//   2) A CORNER WALK the acquisition cannot reach. With the loop DISABLED (the
+//      heater holds its bias, spec 3.1, so dac_code is parked and the physics is
+//      the only thing moving) the ring parameters are driven directly, exactly
+//      as ring_cfg::apply does, to sweep the model through:
+//        * the resonance itself, crossed in both directions -> the C model's
+//          RingEvResonance callback;
+//        * p_peak above ADC full scale -> the clamp branch and the RingEvAdcClip
+//          callback (an ordinary acquisition never clips: p_peak <= 3072 of
+//          4095, so without this the clip path would be compared zero times);
+//        * the far Lorentzian tails, where trans underflows toward 0 and the
+//          quantizer's round-half-up boundary is exercised against noise;
+//        * a dark fibre (trans forced to 0) and the full noise band.
+//      That callback traffic is checked too, and per spec 7.7(4) the two events
+//      carry DIFFERENT weights: sv_ring_event is only reachable because
+//      photonics_ring_step is imported `context`, so a missing RESONANCE
+//      crossing (mandatory) is a uvm_error -- it is how a dropped `context`
+//      shows up, and a much more legible failure than the run-time abort it
+//      would otherwise be -- while a missing ADC CLIP (conditional: a run whose
+//      peak never reaches adc_max legitimately never clips) is only uvm_info.
+//
+//   Finally the tallies: equiv_mismatch_count must be 0 and equiv_cmp_count must
+//   be LARGE. The second half matters as much as the first -- a lockstep check
+//   that compared nothing passes vacuously, which is the same vacuity trap the
+//   negative optical tests carry liveness evidence for.
+class photonic_ring_tuner_dpi_equiv_vseq extends photonic_ring_tuner_base_vseq;
+  `uvm_object_utils(photonic_ring_tuner_dpi_equiv_vseq)
+
+  // A full cold acquisition plus the hold is several thousand clocks even on
+  // the fastest legal ring, and the corner walk below adds exactly
+  // corner_points * corner_dwell = 64 * 8 = 512 more. Requiring a four-figure
+  // count keeps the guard honest without making it seed-flaky (the acquisition,
+  // not the corner walk, is what carries the count past 1000).
+  int min_compared_cycles = 1000;
+
+  // Corner walk: 64 resonance positions from below the parked heater code to
+  // well above it, held for 8 clocks each.
+  int unsigned corner_points = 64;
+  int unsigned corner_dwell  = 8;
+
+  // The corner RING PARAMETERS are fractions of full scale, written at the
+  // 12-bit scale and rescaled exactly as ring_cfg's regime bounds are: on the
+  // default build the rescaling is the identity, so these are 96.0 / 1024.0 /
+  // 3000.0 / 8000.0 as before, and on any other build the corners still land
+  // where they are meant to (a "narrow ring" stays narrow relative to the range,
+  // and the over-range peak stays over the range).
+  localparam real FWHM_NARROW = real'((96   * TUNER_DAC_FS) / TUNER_REF_FS);
+  localparam real FWHM_WIDE   = real'((1024 * TUNER_DAC_FS) / TUNER_REF_FS);
+  localparam real P_NOMINAL   = real'((3000 * TUNER_ADC_FS) / TUNER_REF_FS);
+  // ~2x ADC full scale: the only stimulus that reaches the model's clamp and
+  // the C model's RingEvAdcClip callback.
+  localparam real P_OVER_FS   = real'((8000 * TUNER_ADC_FS) / TUNER_REF_FS);
+
+  function new(string name = "photonic_ring_tuner_dpi_equiv_vseq"); super.new(name); endfunction
+
+  // Drive one corner point straight onto ring_if (ring_cfg::apply's own idiom).
+  // No null guard here ON PURPOSE: body() establishes ring_vif != null once, at
+  // the top, with a uvm_fatal. A silent `if (ring_vif == null) return;` here
+  // would have made this the only quiet path in a sequence whose every other
+  // line dereferences the same handle -- i.e. a corner walk that drove nothing
+  // while the tallies below still reported a verdict.
+  function void set_ring(real res, real fwhm, real p_peak, real noise, bit lit);
+    ring_vif.res_code   = res;
+    ring_vif.fwhm_code  = fwhm;
+    ring_vif.p_peak_lsb = p_peak;
+    ring_vif.noise_lsb  = noise;
+    ring_vif.laser_on   = lit;
+  endfunction
+
+  task body();
+    uvm_reg_data_t d;
+    bit            got;
+    int unsigned   i;
+    int unsigned   parked;
+    real           res_i;
+    int            cmp_before_corners;
+
+    regmodel.reset();
+
+    // Everything below reads the lockstep tallies straight off the optical
+    // interface (equiv_cmp_count / equiv_mismatch_count) and drives the corner
+    // walk onto it. Without the handle there is no verdict to give, so say so
+    // once, loudly, instead of aborting on a null dereference three hundred
+    // lines of stimulus later.
+    if (ring_vif == null)
+      `uvm_fatal("VSEQ_EQUIV_NOVIF",
+                 "ring_vif is null: the SV/DPI lockstep tallies and the corner walk both live on the optical interface, so this sequence cannot produce an equivalence verdict without it (the test sets seq.ring_vif from the tb's config_db)")
+
+    if (m_cfg.m_ring_cfg.model_mode != RING_MODEL_COMPARE)
+      `uvm_error("VSEQ_EQUIV", $sformatf(
+        "this sequence only means something in RING_MODEL_COMPARE, but the backend resolved to %s - did +RING_MODEL override it?",
+        m_cfg.m_ring_cfg.model_mode.name()))
+
+    `uvm_info("VSEQ_EQUIV", $sformatf(
+      "SV vs DPI-C lockstep on %s", m_cfg.m_ring_cfg.convert2string()), UVM_LOW)
+
+    // ---- 1) a real acquisition, at the DEFAULT register settings ------------
+    check_reg(regmodel.STEP,     32'h0000_2004);
+    check_reg(regmodel.SETTLE,   32'h0000_0020);
+    check_reg(regmodel.LOCK_CFG, LOCK_CFG_RST);
+
+    enable_loop();
+    wait_lock(deadline_cycles(), got);
+    if (!got)
+      `uvm_error("VSEQ_EQUIV", $sformatf(
+        "no lock within %0d cycles from cold (%s) - the compared models must still close the loop",
+        deadline_cycles(), m_cfg.m_ring_cfg.convert2string()))
+
+    wait_cycles(m_cfg.stability_window);
+    probe_status(d);
+    if ((d & 32'h0000_0009) !== 32'h0000_0009)
+      `uvm_error("VSEQ_EQUIV", $sformatf(
+        "expected STATUS.LOCKED and STATUS.ACTIVE while holding lock, read 0x%08h", d))
+    probe_dac_pd();
+
+    // ---- 2) the corner walk, loop disabled ---------------------------------
+    disable_loop();
+    wait_cycles(64);
+    read_reg(regmodel.DAC, d);
+    parked = int'(d[TUNER_DAC_WIDTH-1:0]);
+    cmp_before_corners = ring_vif.equiv_cmp_count;
+    `uvm_info("VSEQ_EQUIV", $sformatf(
+      "loop disabled with the heater parked at %0d; walking the ring through its corners (%0d compared cycles so far)",
+      parked, cmp_before_corners), UVM_LOW)
+
+    for (i = 0; i < corner_points; i++) begin
+      // Sweep the resonance THROUGH the parked thermal state, so the detuning
+      // changes sign twice over the walk (once here, once on the way back).
+      res_i = real'(parked) + (real'(int'(i) - int'(corner_points / 2)) *
+                               (m_cfg.m_ring_cfg.fwhm_code / 8.0));
+      if (res_i < 0.0) res_i = 0.0;
+      case (i % 4)
+        // p_peak ABOVE ADC full scale: forces the clamp and the clip callback.
+        0: set_ring(res_i, m_cfg.m_ring_cfg.fwhm_code, P_OVER_FS, 0.0, 1'b1);
+        // Narrow, noisy ring: steep flanks + the full noise band.
+        1: set_ring(res_i, FWHM_NARROW, P_NOMINAL, 8.0, 1'b1);
+        // Wide, quiet ring: the flat top, where a 1-LSB rounding split hides.
+        2: set_ring(res_i, FWHM_WIDE, P_NOMINAL, 0.0, 1'b1);
+        // Dark fibre: trans forced to 0, so the ADC is pure noise.
+        default: set_ring(res_i, m_cfg.m_ring_cfg.fwhm_code, P_NOMINAL, 4.0, 1'b0);
+      endcase
+      wait_cycles(corner_dwell);
+    end
+
+    // Put the ring back the way the test randomized it before anyone looks at it
+    // again (the scoreboard reads laser_on / fwhm from here).
+    m_cfg.m_ring_cfg.apply(ring_vif);
+    wait_cycles(16);
+
+    // ---- the verdict --------------------------------------------------------
+    `uvm_info("VSEQ_EQUIV", $sformatf(
+      "lockstep result: %0d cycles compared (%0d during the corner walk), %0d mismatched",
+      ring_vif.equiv_cmp_count,
+      ring_vif.equiv_cmp_count - cmp_before_corners,
+      ring_vif.equiv_mismatch_count), UVM_LOW)
+
+    if (ring_vif.equiv_mismatch_count != 0)
+      `uvm_error("VSEQ_EQUIV", $sformatf(
+        "the SV and DPI-C models disagreed on %0d of %0d compared cycles - see the RING_DPI_EQUIV errors for the first failing cycle and its inputs",
+        ring_vif.equiv_mismatch_count, ring_vif.equiv_cmp_count))
+
+    // A lockstep check that compared nothing is a green run that proved nothing.
+    if (ring_vif.equiv_cmp_count < min_compared_cycles)
+      `uvm_error("VSEQ_EQUIV", $sformatf(
+        "only %0d cycles were compared (expected >= %0d): RING_MODEL_COMPARE was not actually running for most of this test, so its `no mismatches` verdict is vacuous",
+        ring_vif.equiv_cmp_count, min_compared_cycles))
+
+`ifdef RING_DPI
+    // The callback path, which exists only because photonics_ring_step is
+    // imported `context`. The two checks below are DELIBERATELY ASYMMETRIC, and
+    // the asymmetry is spec 7.7 item 4, not an oversight -- see the comment on
+    // each.
+    `uvm_info("VSEQ_EQUIV", $sformatf("C model %s raised: %s",
+              photonics_dpi_pkg::ring_dpi_version(),
+              photonics_dpi_pkg::ring_dpi_event_str()), UVM_LOW)
+
+    // (a) CROSSING: MANDATORY -> uvm_error. Spec 7.7(4): "the crossing event is
+    //     mandatory ... it is the only cheap evidence that a `context` import
+    //     resolved its scope and that the exported SystemVerilog function was
+    //     actually reachable", and the COMPARE paragraph makes a run that raised
+    //     no resonance-crossing callback on stimulus that provably crosses
+    //     resonance a FAILURE rather than a pass. The corner walk above provably
+    //     crosses: res_code is swept through the parked heater code, so the
+    //     detuning changes sign. Counted per-event rather than as a total, so a
+    //     clip event cannot mask a crossing callback that never arrived.
+    if (photonics_dpi_pkg::ring_dpi_event_count(
+          photonics_dpi_pkg::RingEvResonance) == 0)
+      `uvm_error("VSEQ_EQUIV_NO_CALLBACK",
+                 "the C model raised ZERO resonance-crossing sv_ring_event callbacks although the corner walk swept res_code through the parked heater code and provably crossed resonance (spec 7.7(4): the crossing event is MANDATORY) - either photonics_ring_step lost its `context` import, the export never resolved in this scope, or the model does not raise the event")
+
+    // (b) CLIP: CONDITIONAL -> uvm_info only. Same spec 7.7(4): "The ADC-clip
+    //     event travels the same channel but is conditional: a run whose peak
+    //     never reaches adc_max legitimately never clips, so its absence is
+    //     informational, not a failure." This stimulus does drive p_peak = 8000
+    //     into a 4095-code ADC, so silence here is worth reading -- but the
+    //     mandatory liveness evidence for the callback path is (a), and turning
+    //     this into an error would make the sequence enforce more than the spec.
+    if (photonics_dpi_pkg::ring_dpi_event_count(photonics_dpi_pkg::RingEvAdcClip) == 0)
+      `uvm_info("VSEQ_EQUIV", $sformatf(
+        "no ADC-clip event was raised despite p_peak = %0.0f against a %0d-code ADC - conditional per spec 7.7(4), so not an error, but worth a look at the C model's clip detection",
+        P_OVER_FS, TUNER_ADC_MAX), UVM_LOW)
+`endif
+
+    wait_cycles(4);
   endtask
 endclass
 

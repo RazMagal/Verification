@@ -52,6 +52,7 @@ at this level.
 | 8 | `photonic_ring_tuner_ratio_test` | `ratio_vseq` *(randomized)* | `LOCKABLE` *(randomized)* | Coverage filler with **no optical verdict** (`RING_EXP_NONE`): programs `SETTLE` as a randomized multiple of the ring's `tau` so the settle/tau bins `{<1, 1–2, 2–4, >4}` all fill, and randomizes `DITHER` so the dither/linewidth coverpoint fills too. The point of the cross is to *show* which ratios acquire and which do not, so the outcome is recorded rather than asserted — and consistently with that, scoreboard checks 2 (accuracy) and 3 (stability) are **latched and reported but not escalated** here, so a test documented as having no optical verdict cannot fail on one. | functional coverage (`cg_acq.x_ratio_outcome`), bound SVA |
 | 9 | `photonic_ring_tuner_rail_w1c_race_test` | `rail_w1c_race_vseq` | `RAIL` | Directed hit on the **W1C-vs-HW-set race** of spec §3.5, added because the `c_w1c_race_rail` cover point was otherwise **unreachable**: tests 6 and 7 both disable the loop before clearing the flag, so hardware can never re-set it in the same clock. Here the loop stays *enabled* and railed, so `rail_err_q` re-asserts every fine iteration (`SETTLE`=4 and `THRESH`=0 shorten that iteration to ~13 clocks and keep `move_up` permanently true), while a few hundred phase-jittered W1C writes collide with it. HW-set must win: the bit still reads 1 after the clear. | Scoreboard check 5 (`RING_EXP_RAIL_ERR`), `p_rail_sticky`, cover `c_w1c_race_rail` |
 | 10 | `photonic_ring_tuner_lock_loss_test` | `lock_loss_vseq` | `LOCKABLE` *(randomized)* | Directed **lock loss**, added because `cg_acq.cp_outcome.lost_lock` (spec §7.6 and the §5 cover list) was otherwise **unfillable**: nothing else disturbs an established lock, and in `lock_test` a lost lock is itself a `UVM_ERROR`. Here the loop acquires and holds, then the fibre goes **dark with the loop still enabled**. Both probes collapse below `MINPOW`, so spec §3.4 requires `locked` to deassert within one fine iteration — `locked_q` is a live status, not a sticky bit. Checked: `locked` falls, `STATUS.LOCKED` clears, `STATUS.ACTIVE` stays high (losing lock must not stop the loop), no sticky error flag is invented, `dac_q` does not walk away while dark (noise ≤ 2 LSB against `THRESH` = 8), and the loop **re-acquires without a re-sweep** when the light returns. | Scoreboard `RING_EXP_LOCK_THEN_LOSS` (the loss is *required*, not flagged), cover `c_lock_lost`, `cg_acq.cp_outcome.lost_lock` |
+| 11 | `photonic_ring_tuner_dpi_equiv_test` — **only exists in a `+define+RING_DPI` build; NOT in the default `TESTS` list** | `dpi_equiv_vseq` | `LOCKABLE` *(randomized)* | **SV-vs-C model equivalence**, the deliverable of the optional DPI-C layer ([`common/dpi`](../../../common/dpi/README.md)). The optical model runs in `RING_MODEL_COMPARE`: the SystemVerilog model of §7.2 and the C model are evaluated **in lockstep every clock on identical inputs** — same `dac_code`, the same clamped `tau`/`fwhm`, and the same `$urandom_range` noise sample, drawn in SystemVerilog and *passed into* `photonics_ring_step` so the run still reproduces from its seed and the comparison stays about the physics rather than about two different noise streams. Stimulus is a **full cold acquisition at the default register settings** carrying the same `RING_EXP_LOCK` verdict as `lock_test` — the compared model must still *close the loop*, not merely be self-consistent — followed, with the loop disabled and the heater parked, by a **corner walk** an acquisition never reaches: 64 resonance positions swept through the parked thermal state so the detuning crosses zero in both directions, cycling `p_peak` = 8000 against a 4095-code ADC (the clamp, and the `RingEvAdcClip` callback), a narrow noisy ring, a wide quiet one, and a dark fibre. Both backends are IEEE-754 doubles doing the same operations in the same order, so the quantized `adc_code` must match **exactly**; the pre-quantization reals are compared to `1e-9 + 1e-12·\|ref\|`, tight enough to catch a re-derived formula while tolerating host-FPU excess precision. Three anti-vacuity guards, because a green equivalence run that compared nothing is this test's characteristic failure mode: at least 1000 compared cycles, at least one `sv_ring_event` raised by C (zero is how a dropped `context` import presents itself), and the scoreboard's independent re-check of the backend that actually ran. **Requires `+define+RING_DPI` and `common/dpi`'s shared library**, so it is excluded from `make regress` and has its own `make regress_dpi`; in a build without the define, selecting the DPI or COMPARE backend is a `UVM_FATAL` naming the missing define — never a silent fall-back to comparing the SV model with itself. | `RING_DPI_EQUIV` (per-cycle mismatch from `ring_model`, first 16 reported with every input and both sets of outputs, the rest counted), `VSEQ_EQUIV` / `VSEQ_EQUIV_NO_CALLBACK`, scoreboard `SCB_BACKEND` / `SCB_EQUIV` / `SCB_EQUIV_VACUOUS`, plus scoreboard checks 1–3 (`RING_EXP_LOCK`) |
 
 ---
 
@@ -61,15 +62,25 @@ at this level.
 
 | | |
 |---|---|
-| **Tests** (10) | smoke, reg, error, lock, settle_short, dark, rail, ratio, rail_w1c_race, lock_loss |
+| **Tests** (10 — the whole default suite) | smoke, reg, error, lock, settle_short, dark, rail, ratio, rail_w1c_race, lock_loss |
 | **Seeds** (8) | 1, 2, 3, 4, 5, 6, 7, 8 |
 | **Total runs** | **80** |
 
+**Test 11, `dpi_equiv`, is deliberately absent from that list, and the 80 above
+does not include it.** It exists only in a build compiled with
+`+define+RING_DPI` and linked against `common/dpi`'s shared library; counting it
+in a matrix that `make regress` cannot run would overstate what the default flow
+covers. It has its own targets: `make regress_dpi` runs it across the same eight
+seeds (**8 further runs**, only where a simulator can compile user C), and `make
+regress_dpi_all` re-runs the ten tests above with the C model as the *only*
+backend (`RING_MODEL=dpi`). The default `questa` / `vcs` / `xrun` / `regress`
+targets are pure SystemVerilog and are untouched by the layer's existence.
+
 Eight seeds rather than the five used by `apb_timer`/`apb_gpio`, because the
 optical tests are constrained-*random* in a way those are not: the ring itself
-is randomized per seed, so tests 4–10 are a different physical problem on every
-run and a single seed proves very little. Tests 1–3 are directed and
-seed-stable.
+is randomized per seed, so tests 4–10 — and test 11, which is why `regress_dpi`
+uses the same eight — are a different physical problem on every run, and a single
+seed proves very little. Tests 1–3 are directed and seed-stable.
 
 The headline coverage item is `cg_acq.x_ratio_outcome` — the settle/tau ratio
 crossed with the lock outcome. **Every `(ratio, locked)` cell stays in**, in
@@ -96,7 +107,17 @@ environments in this repository are compiled and run on EDA Playground
 (Verible syntax + lint). Nothing in this suite has been simulated yet, so no
 pass/fail status, coverage figure, or bug count is claimed here. This document
 is the regression *plan*; the results column will be added once the suite has
-been run.
+been run. That includes `dpi_equiv`: **no UVM/DPI simulation has been run**, so
+nothing is claimed about the SV/C equivalence in a simulator.
+
+The one exception, and it is a small one: the C model's own unit tests build and
+run with **`gcc` alone, no simulator and no licence**, so they *are* executable
+here. `make -C common/dpi test` was run on this machine and reported **98 checks
+in 11 sections, 0 failures** — covering the §7.2 maths, both ADC rails, the noise
+gate, the degenerate configurations, handle independence, reset from a hot
+heater, mid-run reconfiguration and the event callbacks. That gates the
+arithmetic the C model implements; it says nothing about DPI *linkage*, which is
+exactly what `dpi_equiv` exists to prove and what has not been run.
 
 ---
 
@@ -117,6 +138,20 @@ make -C ip/photonic_ring_tuner/sim regress
 Targets `cd` to the repo root first, because [`../sim/run.f`](../sim/run.f)
 uses repo-root-relative paths.
 
+Test 11 needs the DPI-C build, so it has separate targets — they add
+`+define+RING_DPI`, build `common/dpi`'s shared library first, and refuse to
+start if it did not appear:
+
+```sh
+make -C ip/photonic_ring_tuner/sim questa_dpi   # or vcs_dpi / xrun_dpi
+make -C ip/photonic_ring_tuner/sim regress_dpi  # dpi_equiv x 8 seeds
+```
+
+DPI linkage is the one genuinely per-vendor part of the flow, which is why there
+is a target per simulator rather than a define; see
+[`../sim/README.md`](../sim/README.md) and
+[`common/dpi/README.md`](../../../common/dpi/README.md).
+
 ### On EDA Playground
 
 1. Left pane: choose UVM **1.2** and a simulator. **Aldec Riviera-PRO** is the one
@@ -124,7 +159,12 @@ uses repo-root-relative paths.
    only UVM-capable choice that needs *no account validation*, so anyone with a
    Google login can run this suite. Questa / VCS / Xcelium also work but are
    gated behind a pre-approved (institutional) email address.
-2. Select the test with `+UVM_TESTNAME=<test from the table>`.
+2. Select the test with `+UVM_TESTNAME=<test from the table>` — **tests 1–10
+   only**. Playground's Design/Testbench panes offer no way to add a C file to
+   the compile, so `dpi_equiv` cannot run there; do not set `RING_DPI` and do
+   not paste `photonics_dpi_pkg.sv`. Without the define that package declares no
+   DPI at all, so the other ten tests behave exactly as they did before the
+   layer existed. That constraint is the reason for the guard.
 3. Paste the sources in `run.f` compile order: interfaces (`apb_if`, `ring_if`)
    → packages → **the optical model** (`ring_model.sv`) → RTL → SVA →
    `tb/photonic_ring_tuner_tb_top.sv`.

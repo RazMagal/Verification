@@ -28,6 +28,9 @@ ip/photonic_ring_tuner/
   tb/photonic_ring_tuner_tb_top.sv      tb top (clk/rst, ifs, DUT, MODEL, binds)
   sim/run.f  sim/Makefile  sim/README.md
 common/apb_vip/                       reused APB VIP (do not modify)
+common/dpi/photonics_dpi_pkg.sv       SV side of the OPTIONAL DPI-C ABI
+                                      (inert without `+define+RING_DPI`)
+common/dpi/photonics_dpi.{h,c}        the C reference model + its own tests
 ```
 
 ## The closed loop (what makes this env different)
@@ -69,12 +72,19 @@ Interfaces compile at `$unit` **before** the packages that use their virtual-
 interface types:
 
 1. `common/apb_vip/apb_if.sv`, `ip/photonic_ring_tuner/dv/optics/ring_if.sv`
-2. `common/apb_vip/apb_vip_pkg.sv` then `ip/photonic_ring_tuner/dv/photonic_ring_tuner_pkg.sv`
-3. `ip/photonic_ring_tuner/dv/optics/ring_model.sv`
-4. `ip/photonic_ring_tuner/rtl/photonic_ring_tuner.sv`
-5. `common/apb_vip/apb_protocol_checker.sv`, `ip/photonic_ring_tuner/rtl/photonic_ring_tuner_sva.sv`
+2. `common/dpi/photonics_dpi_pkg.sv` — the DPI-C ABI package, **before** the two
+   things that import it (`photonic_ring_tuner_pkg` and `ring_model.sv`). A
+   filelist cannot carry an `` `ifdef ``, so the line in `run.f` is
+   unconditional and the guard lives *inside* the file: with no
+   `+define+RING_DPI` it compiles to an **empty package** and declares no
+   `import "DPI-C"` at all, so nothing imports it, nothing links against C, and
+   the default flow is untouched.
+3. `common/apb_vip/apb_vip_pkg.sv` then `ip/photonic_ring_tuner/dv/photonic_ring_tuner_pkg.sv`
+4. `ip/photonic_ring_tuner/dv/optics/ring_model.sv`
+5. `ip/photonic_ring_tuner/rtl/photonic_ring_tuner.sv`
+6. `common/apb_vip/apb_protocol_checker.sv`, `ip/photonic_ring_tuner/rtl/photonic_ring_tuner_sva.sv`
    (plain-SVA modules, `bind`-ed in the tb top)
-6. `ip/photonic_ring_tuner/tb/photonic_ring_tuner_tb_top.sv`
+7. `ip/photonic_ring_tuner/tb/photonic_ring_tuner_tb_top.sv`
 
 `+incdir` lines in `run.f` point at every directory holding a `.svh`.
 Default APB widths (ADDR_WIDTH=8, DATA_WIDTH=32): the standalone build needs
@@ -89,6 +99,10 @@ make -C ip/photonic_ring_tuner/sim xrun   TEST=photonic_ring_tuner_reg_test
 make -C ip/photonic_ring_tuner/sim regress        # all tests x 8 seeds (Questa)
 ```
 
+These are pure SystemVerilog — no `+define+RING_DPI`, no C, no shared library.
+The optional DPI-C layer has its own `*_dpi` targets; see
+[Optional DPI-C reference model](#optional-dpi-c-reference-model-definering_dpi--off-by-default).
+
 | Test | Ring regime | What it proves |
 |------|-------------|----------------|
 | `photonic_ring_tuner_smoke_test`        | fixed mid-range | reset values, RW/RO/reserved/W1C behaviour |
@@ -101,6 +115,7 @@ make -C ip/photonic_ring_tuner/sim regress        # all tests x 8 seeds (Questa)
 | `photonic_ring_tuner_rail_test`         | RAIL              | resonance past DAC_MAX ⇒ `RAIL_ERR`, saturate not wrap |
 | `photonic_ring_tuner_rail_w1c_race_test`| RAIL              | W1C vs HW-set race on `RAIL_ERR` while still railing (spec §3.5) |
 | `photonic_ring_tuner_ratio_test`        | LOCKABLE (random) | sweeps settle/tau + dither for the coverage cross |
+| `photonic_ring_tuner_dpi_equiv_test`    | LOCKABLE (random) | **needs `+define+RING_DPI`** — full acquisition with the SV and DPI-C optical models in lockstep; they must agree every clock (see below) |
 
 Because the ring is randomized per seed, **one seed proves very little** — the
 `regress` target runs every test across eight seeds, which is the minimum that
@@ -118,6 +133,181 @@ delivered a sample above `MINPOW` while the DUT's own `PD` register read
 non-zero. Missing evidence is a `UVM_ERROR` (`SCB_NOT_LIVE` / `VSEQ_NOT_LIVE`),
 not a silent pass. The mirror image applies to `lock_test`: the stability check
 only counts if the lock was **held** for at least `stability_window/2` clocks.
+
+## Optional DPI-C reference model (`+define+RING_DPI`) — off by default
+
+The optical model can also be evaluated by a C model (`common/dpi`), either
+*instead of* the SystemVerilog one or **in lockstep with it**. The whole layer
+sits behind one compile guard.
+
+### The compile guard is the point
+
+Every `import "DPI-C"` / `export "DPI-C"` declaration and every DPI call in this
+repository is inside `` `ifdef RING_DPI ``. **With the define absent, nothing
+changes**: `common/dpi/photonics_dpi_pkg.sv` compiles to an empty package with
+no DPI declarations, no C symbol is referenced, no shared library
+is linked, and `ring_model.sv` has exactly the dependencies it had before the
+layer existed. That is not defensive style — these UVM runs happen on **EDA
+Playground, which will not compile your C**, and the existing flow has to keep
+working there. *Default flow = no define = pure SystemVerilog.*
+
+The DPI and COMPARE backends are correspondingly **unreachable** without the
+define: asking for one produces a `UVM_FATAL` naming the missing define
+(`ring_cfg::resolve_model_mode`) and a `$fatal` in `ring_model` if the mode gets
+there anyway. Never a silent fallback — a "DPI equivalence" run that quietly
+compared the SV model with itself is the most expensive kind of green run there
+is.
+
+### Selecting a backend
+
+| `ring_model_e` | What runs |
+|---|---|
+| `RING_MODEL_SV` | the SystemVerilog physics — **the default for every existing test** |
+| `RING_MODEL_DPI` | the C model closes the loop; the SV branch is skipped |
+| `RING_MODEL_COMPARE` | both, every clock, on identical inputs, checked against each other |
+
+A test picks one by overriding `ring_model_mode()`; `+RING_MODEL=sv|dpi|compare`
+overrides the test. `ring_cfg::resolve_model_mode()` is the single place that
+decides, and `ring_model` publishes the backend it **actually ran** on
+`ring_if.model_mode_active` — which is what functional coverage
+(`cg_acq.cp_backend`) samples, so a regression can *demonstrate* the DPI path
+was exercised instead of assuming it. In a build without the define those two
+bins are `ignore_bins`'d, because there they are structurally unreachable.
+
+### The randomness stays in SystemVerilog
+
+Exactly one `$urandom_range` draw happens per clock, in `ring_model`, in **every
+backend**, and the resulting noise sample is *passed into* `photonics_ring_step`.
+The C model must add it verbatim and must never call `rand()` itself: a C-side
+RNG is invisible to `-sv_seed` / `+ntb_random_seed`, so a failing run could not
+be replayed. And in COMPARE, two models fed *different* noise would disagree for
+a reason that has nothing to do with either being wrong.
+
+### `photonics_ring_step` is imported `context` — and why
+
+It calls back into SystemVerilog through the exported `sv_ring_event`. An
+exported function belongs to a SystemVerilog **scope**, and only a `context`
+import carries the scope the simulator needs to resolve that callback; a plain
+import lets the tool skip the bookkeeping and the callback fails at run time,
+far from its cause. Same gotcha, second half: the context is the scope the
+function is *called from*, so every call goes through the thin `ring_dpi_*`
+wrappers in `photonics_dpi_pkg` — lexically inside the same package that owns the
+export. Do not call the raw imports from a module.
+
+#### FIRST-RUN CHECK: `context` resolved from a *package* scope
+
+**Read this before trusting the first DPI run on any new simulator.** The design
+above assumes a `context` import called from a package function gets *that
+package* as its DPI context, so `svGetScope()` inside
+`photonics_ring_step` lands on `photonics_dpi_pkg`, where the exported
+`sv_ring_event` lives. That is the intent and it is what the LRM's scope rules
+describe — but **a package is not an instantiated scope**, and a tool that
+instead resolves the context to the *instantiated caller* would hand
+`svGetScope()` the `ring_model` instance, where `sv_ring_event` does not exist.
+This has never been executed here (there is no simulator in this repo), so treat
+the first run as the experiment that settles it.
+
+Symptoms, in the order they are likely to appear:
+
+* a run-time abort on the **first resonance crossing** — typically
+  `svGetScope`/`svSetScope`-flavoured: "DPI call outside of a context",
+  "exported task/function not found in scope", or an access violation inside the
+  simulator's DPI layer. Note *when* it fires: at the first callback, not at the
+  first `photonics_ring_step`, which is what distinguishes it from a link error;
+* or, on a more forgiving tool, **no abort and no events**: the callback is
+  silently dropped. That is what
+  `VSEQ_EQUIV_NO_CALLBACK` ("the C model raised ZERO resonance-crossing
+  sv_ring_event callbacks") exists to catch — a `UVM_ERROR`, not a mystery.
+
+Diagnosis without a debugger: `make questa_dpi` already writes `vlog`'s own view
+of the ABI to `sim/build/photonics_dpi_vlog.h`. Look at the generated
+`sv_ring_event` prototype and the scope it is declared under, and diff the file
+against the hand-written `common/dpi/photonics_dpi.h`. If the export is emitted
+under a scope name that is not `photonics_dpi_pkg`, the assumption above does not
+hold on that tool.
+
+The fix, if it is needed, is **on the C side and is small** — before calling
+`sv_ring_event`, pin the scope explicitly rather than relying on the inherited
+one:
+
+```c
+svScope prev = svSetScope(svGetScopeFromName("photonics_dpi_pkg"));
+sv_ring_event(ev, value);
+svSetScope(prev);          /* restore -- do not leak the scope change */
+```
+
+Cache the `svGetScopeFromName()` result (it is a string lookup) and check it for
+`NULL`, which would mean the package name is spelled differently in that tool's
+scope table. No SystemVerilog change is required either way, which is why none
+was made pre-emptively: the wrappers are already in the right scope, and adding
+a work-around for a failure no tool here has demonstrated would be guessing.
+
+### The equivalence test
+
+`photonic_ring_tuner_dpi_equiv_test` runs a **full acquisition** in
+`RING_MODEL_COMPARE`: cold coarse sweep across the whole DAC range (the entire
+Lorentzian, detuning through zero), fine dither lock, hold across the stability
+window — the same `RING_EXP_LOCK` verdict `lock_test` carries, so the compared
+model must still *close the loop* and not merely be self-consistent. Then, with
+the loop disabled and the heater parked, a **corner walk** drives the ring
+through what an acquisition never reaches: the resonance crossed in both
+directions, `p_peak = 8000` against a 4095-code ADC (the clamp, and the
+`RingEvAdcClip` callback), the far tails, a dark fibre and the full noise band.
+
+Both models are IEEE-754 doubles doing the same operations in the same order, so
+the quantized `adc_code` must match **exactly**; the pre-quantization reals are
+compared with `1e-9 + 1e-12·|ref|`, tight enough to catch a re-derived formula
+while tolerating host-FPU excess precision. A mismatch is a `RING_DPI_EQUIV`
+`UVM_ERROR` naming the cycle, every input both models were given, and both sets
+of outputs (the first 16 in full, the rest counted).
+
+Three further checks stop the result being vacuous, which is the failure mode an
+equivalence test is most prone to:
+
+* `equiv_cmp_count` must be **large** — a lockstep check that compared nothing
+  passes trivially;
+* the C model must have raised **at least one resonance-crossing**
+  `sv_ring_event`, since the corner walk provably sweeps `res_code` through the
+  parked heater code. Zero crossing callbacks is how a dropped `context`
+  presents itself, and spec §7.7(4) makes that event **mandatory**, so it is a
+  `UVM_ERROR`. The **clip** event is explicitly *conditional* in the same clause
+  — a run whose peak never reaches `adc_max` legitimately never clips — so its
+  absence is a `UVM_INFO`. The asymmetry is deliberate and cited at both call
+  sites;
+* the scoreboard independently re-checks the backend that ran and the mismatch
+  total (`SCB_BACKEND` / `SCB_EQUIV` / `SCB_EQUIV_VACUOUS`).
+
+### Running it — linkage differs per simulator, hence one target each
+
+```sh
+make -C ip/photonic_ring_tuner/sim vcs_dpi      # VCS: -sv_lib at elaboration
+make -C ip/photonic_ring_tuner/sim questa_dpi   # vlog -dpiheader, vsim -sv_lib
+make -C ip/photonic_ring_tuner/sim xrun_dpi     # xrun -sv_lib, single step
+
+make -C ip/photonic_ring_tuner/sim regress_dpi      # equivalence test x 8 seeds
+make -C ip/photonic_ring_tuner/sim regress_dpi_all  # the WHOLE suite, RING_MODEL=dpi
+```
+
+All of them run `make -C common/dpi` first and refuse to start if the shared
+library did not appear; override its name with
+`DPI_LIBBASE=<path without .so>`. **All three load that one library** — VCS is
+*not* handed the `.c` to recompile with its own flags, because an equivalence
+result is only worth something if every simulator measured the same binary.
+
+`RING_MODEL=` picks the backend and `DPI_TEST=` (or plain `TEST=`, which the
+`*_dpi` targets now honour) picks the test, so any existing test can be re-run
+against the C model
+(`make questa_dpi DPI_TEST=photonic_ring_tuner_rail_test RING_MODEL=dpi`). With
+neither set, the `*_dpi` targets run `photonic_ring_tuner_dpi_equiv_test`.
+
+`questa_dpi` writes `vlog`'s own view of the ABI to `sim/build/`; diffing it
+against the hand-written `common/dpi/photonics_dpi.h` is a five-second check for
+the classic prototype mismatches (`int` vs `long`, a `real` output that should be
+a `double*`, a missing `context`) before they become a run-time crash.
+
+The **default** targets (`questa`, `vcs`, `xrun`, `regress`) are untouched: no
+define, no C, and `photonic_ring_tuner_dpi_equiv_test` is deliberately *not* in
+the `TESTS` list they iterate.
 
 ## Run on EDA Playground
 
@@ -144,6 +334,12 @@ the site compiles the *Design* pane first, then *Testbench*):
 
 Note: the `bind` statements live in `photonic_ring_tuner_tb_top.sv`; the two SVA
 modules must be compiled (Design pane) so the binds resolve.
+
+**The DPI layer is not usable on Playground and does not need to be.** Do not
+set `RING_DPI` there and do not paste `photonics_dpi_pkg.sv` — without the
+define it is an empty package, every existing test runs `RING_MODEL_SV`, and the
+suite behaves exactly as it did before the layer existed. That constraint is why
+the guard exists.
 
 ## Design notes
 
@@ -185,6 +381,14 @@ modules must be compiled (Design pane) so the binds resolve.
   particular also requires that the coarse sweep did **not** end in `SWEEP_ERR`,
   so it can only pass by demonstrating the thermal-lag failure it claims rather
   than degenerating into the dark-ring case.
+- **The C model is a suspect, not a reference.** The DPI layer never replaces
+  the SystemVerilog model in the default flow; `RING_MODEL_COMPARE` runs the two
+  side by side and *the SV model drives the loop*, so a broken C model produces a
+  localized stream of `RING_DPI_EQUIV` errors naming the first failing cycle and
+  its inputs, rather than a garbage acquisition whose cause is three abstraction
+  layers away. The C model is still evaluated on every one of those clocks — it
+  is being measured, not bypassed. This is the shape of the real task: qualifying
+  somebody else's model against one you already trust.
 - **Coverage crosses are honest, not padded.** `x_ratio_outcome` and `x_step`
   both contain cells no stimulus in this suite can reach (the regime that
   produces an outcome also pins the settle/tau ratio; the suite only moves one

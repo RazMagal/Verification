@@ -29,6 +29,11 @@ tailored to one block.
   photonic microring that the DUT's control loop closes through, checked by a
   property-based scoreboard against the model's internal state rather than by a
   cycle-exact predictor.
+- **DPI-C, in both directions** — the ring's optical model also exists as a C model
+  (`import "DPI-C"`, plus an `export`ed `sv_ring_event` the C side calls back into), the
+  way a photonics team actually ships a device model; a lockstep COMPARE mode qualifies
+  it against the SystemVerilog reference, and a `RING_DPI` compile guard keeps the
+  default build free of any C dependency.
 - **Functional coverage** — control fields, mode × irq_en crosses, prescaler/load bins,
   timeout events, error responses, and the W1C-vs-HW-set race.
 - **A second (interrupt) agent**, **virtual sequences**, **config objects**, **factory**
@@ -45,6 +50,7 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for block diagrams and the fu
 
 ```
 common/apb_vip/         Reusable APB3 master UVM VIP + bindable APB protocol SVA
+common/dpi/             Optional DPI-C layer: the ring's optical model in C, its SV ABI package, and gcc-only unit tests
 ip/apb_timer/           IP #1 — a programmable timer
   rtl/                    apb_timer.sv + timer SVA
   dv/                     UVM env: RAL, reference-model scoreboard, coverage, IRQ agent, vseqs
@@ -99,7 +105,9 @@ contract: [`ip/photonic_ring_tuner/docs/photonic_ring_tuner_spec.md`](ip/photoni
 
 **Tests:** `smoke`, `reg` (RAL hw-reset + bit-bash), `error` (pslverr), `lock`,
 `settle_short` (must **not** lock), `dark` (SWEEP_ERR, no false lock), `rail` (saturate,
-never wrap), `ratio` (fills the settle/tau × outcome cross).
+never wrap), `ratio` (fills the settle/tau × outcome cross), `rail_w1c_race` (HW-set-wins
+on a sticky flag), `lock_loss` (an established lock is broken and must be reported) — plus
+`dpi_equiv` in a `+define+RING_DPI` build (SV vs C model equivalence).
 
 ### `apb_subsystem` (SoC-style block)
 An APB interconnect decoding `paddr[11:8]` to `timer0` @0x000, `timer1` @0x100, a memory
